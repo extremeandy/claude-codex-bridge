@@ -158,6 +158,12 @@ Ask for a `read-only` or `workspace-write` sandbox to restrict a thread:
 > Start Codex with a read-only sandbox in /absolute/path/to/my-project and
 > review the authentication code.
 
+Ask for an approval policy to have Codex ask before it goes beyond the sandbox.
+Claude shows you each request and waits for your decision:
+
+> Start Codex in /absolute/path/to/my-project with a workspace-write sandbox
+> and the on-request approval policy, and fix the failing login test.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |
@@ -168,7 +174,8 @@ Ask for a `read-only` or `workspace-write` sandbox to restrict a thread:
 | `codex_stop` | Interrupt the current turn. |
 | `codex_resume` | Reopen a saved Codex thread. |
 | `codex_answer` | Answer a structured question from Codex. |
-| `codex_status` | Read status, pending questions, and the latest answer. |
+| `codex_approve` | Pass your decision on a Codex approval request. |
+| `codex_status` | Read status, pending questions and approvals, and the latest answer. |
 | `codex_events` | Read recent events using a sequence cursor. |
 
 ## How it works
@@ -190,23 +197,61 @@ It can modify files and run commands with the permissions of your local user
 without requesting approval. Claude's tool permissions do not sandbox Codex.
 Choose the project directory and tasks with that execution mode in mind.
 
-`codex_start` and `codex_resume` accept an optional `sandbox` of `read-only`,
-`workspace-write`, or `danger-full-access`. The approval policy stays `never`,
-and the bridge rejects approval requests, so a command that needs more than the
-sandbox allows fails instead of asking.
+`codex_start` and `codex_resume` accept these optional settings:
 
-To limit Codex regardless of what Claude asks for, set `CODEX_BRIDGE_SANDBOX`
-to one of those modes in the environment Claude Code starts from, for example
-`CODEX_BRIDGE_SANDBOX=workspace-write claude`. That mode becomes both the
-default and the widest allowed: the bridge refuses a `sandbox` wider than it
-(`read-only` < `workspace-write` < `danger-full-access`) and accepts a narrower
-one. The bridge refuses to start when the variable is set to an empty or
+| Setting | Values | Default | Environment variable |
+| --- | --- | --- | --- |
+| `sandbox` | `read-only`, `workspace-write`, `danger-full-access` | `danger-full-access` | `CODEX_BRIDGE_SANDBOX` |
+| `approvalPolicy` | `untrusted`, `on-request`, `never` | `never` | `CODEX_BRIDGE_APPROVAL_POLICY` |
+| `approvalsReviewer` | `user`, `auto_review` | not sent: Codex uses its configured reviewer | `CODEX_BRIDGE_APPROVALS_REVIEWER` |
+
+With `approvalPolicy: never`, Codex never asks, so a command that needs more
+than the sandbox allows fails. `on-request` lets Codex ask to go beyond the
+sandbox, for example for network access; `untrusted` asks before any command
+Codex does not know to be safe.
+
+`approvalsReviewer` chooses who answers those requests. With `user`, each
+request reaches Claude as an `approval` event with the command, the proposed
+diff or the requested permissions. The turn waits with status
+`waiting_approval` until Claude passes your decision with `codex_approve`:
+`accept`, `acceptForSession`, `decline`, or `cancel` (decline and interrupt the
+turn). A request answered elsewhere, such as in another client of the same
+Codex app-server, or left open when the turn ends, is cleared. With
+`auto_review`, a Codex reviewer agent decides, and the bridge reports each
+decision as an `auto_review` event.
+
+The bridge tells Claude never to approve on its own judgment. To have Claude
+Code also ask you before every `codex_approve` call, whatever the permission
+mode, add an `ask` rule to your Claude Code settings, for example
+`~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "ask": ["mcp__plugin_claude-codex-bridge_codex-bridge__codex_approve"]
+  }
+}
+```
+
+Ask rules take precedence over allow rules, and Claude Code prompts for them
+even in `bypassPermissions` mode. If you run the server directly with
+`mise run claude`, the tool is `mcp__codex-bridge__codex_approve` instead.
+
+To change a default, set its environment variable in the environment Claude
+Code starts from, for example
+`CODEX_BRIDGE_SANDBOX=workspace-write CODEX_BRIDGE_APPROVAL_POLICY=on-request claude`.
+The bridge refuses to start when one of these variables is set to an empty or
 unknown value.
 
-A thread keeps its sandbox while the bridge has it attached, and `codex_resume`
-with a different `sandbox` is an error. The bridge does not save a thread's
-sandbox, so after the bridge restarts, `codex_resume` without `sandbox` uses
-the default, not the mode the thread started with.
+`CODEX_BRIDGE_SANDBOX` also limits Codex regardless of what Claude asks for: the
+mode it names is both the default and the widest allowed. The bridge refuses a
+`sandbox` wider than it (`read-only` < `workspace-write` < `danger-full-access`)
+and accepts a narrower one. The approval variables set defaults only.
+
+A thread keeps its settings while the bridge has it attached, and
+`codex_resume` with a different value is an error. The bridge does not save a
+thread's settings, so after the bridge restarts, `codex_resume` uses the
+defaults for any setting it omits, not the values the thread started with.
 
 The plugin uses Codex's existing authentication and configuration. It adds no
 API proxy, model impersonation, interception hook, or global timeout override.
