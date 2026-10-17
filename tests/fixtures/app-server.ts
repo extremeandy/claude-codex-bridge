@@ -306,16 +306,21 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             command: "curl https://example.com",
           },
         });
-      } else if (prompt === "approve_file") {
-        notify("item/started", {
-          threadId: params.threadId,
-          item: {
-            type: "fileChange",
-            id: "patch",
-            changes: [{ path: "a.txt", kind: { type: "add" }, diff: "+a" }],
-            status: "inProgress",
-          },
-        });
+      } else if (
+        prompt === "approve_file" ||
+        prompt === "approve_file_unstarted"
+      ) {
+        if (prompt === "approve_file")
+          notify("item/started", {
+            threadId: params.threadId,
+            turnId: thread.turnId,
+            item: {
+              type: "fileChange",
+              id: "patch",
+              changes: [{ path: "a.txt", kind: { type: "add" }, diff: "+a" }],
+              status: "inProgress",
+            },
+          });
         notify("item/fileChange/patchUpdated", {
           threadId: params.threadId,
           turnId: thread.turnId,

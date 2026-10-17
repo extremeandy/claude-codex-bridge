@@ -105,7 +105,10 @@ export class Bridge {
   private sessions = new Map<string, Session>();
   private requests = new Map<string, PendingRequest>();
   /** Proposed edits of file changes in flight, by item ID. */
-  private fileChanges = new Map<string, FileUpdateChange[]>();
+  private fileChanges = new Map<
+    string,
+    { turnId: string; changes: FileUpdateChange[] }
+  >();
   private busy = new Set<string>();
   private journal: BridgeEvent[] = [];
   private sequence = 0;
@@ -446,7 +449,10 @@ export class Bridge {
         const item = event.params.item;
         if (item.type === "fileChange") {
           if (event.method === "item/started")
-            this.fileChanges.set(item.id, item.changes);
+            this.fileChanges.set(item.id, {
+              turnId: event.params.turnId,
+              changes: item.changes,
+            });
           else this.fileChanges.delete(item.id);
         }
         if (item.type === "agentMessage" && event.method === "item/completed") {
@@ -480,6 +486,9 @@ export class Bridge {
         session.turnId = null;
         for (const pending of [...session.questions, ...session.approvals])
           this.clearRequest(pending.requestId);
+        // A file change interrupted with its turn never sends item/completed.
+        for (const [itemId, { turnId }] of this.fileChanges)
+          if (turnId === event.params.turn.id) this.fileChanges.delete(itemId);
         this.emit(
           session.threadId,
           session.status,
@@ -489,7 +498,10 @@ export class Bridge {
         break;
       case "item/fileChange/patchUpdated":
         if (this.fileChanges.has(event.params.itemId))
-          this.fileChanges.set(event.params.itemId, event.params.changes);
+          this.fileChanges.set(event.params.itemId, {
+            turnId: event.params.turnId,
+            changes: event.params.changes,
+          });
         break;
       case "serverRequest/resolved":
         // Another client of a shared app-server may have answered first.
@@ -535,7 +547,7 @@ export class Bridge {
     }
     const changes =
       request.method === "item/fileChange/requestApproval"
-        ? this.fileChanges.get(request.params.itemId)
+        ? this.fileChanges.get(request.params.itemId)?.changes
         : undefined;
     session.approvals.push({
       requestId,

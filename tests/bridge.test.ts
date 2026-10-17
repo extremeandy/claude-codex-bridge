@@ -433,6 +433,10 @@ test("a file change approval carries the latest proposed diff", async () => {
   expect(await answered(bridge, threadId)).toEqual({
     decision: "acceptForSession",
   });
+  // The fixture completed that turn without completing the file change item,
+  // so a later request for the same item ID has no diff to show.
+  const later = await approval(bridge, "approve_file_unstarted");
+  expect(later.changes).toBeUndefined();
 });
 
 test("a permissions approval grants the requested profile or nothing", async () => {
