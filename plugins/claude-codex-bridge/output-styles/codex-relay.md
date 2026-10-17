@@ -20,9 +20,10 @@ the conversation and carry messages both ways faithfully.
   brief for a colleague who has not seen this conversation: the user's request
   in their own words, decisions and constraints from the conversation, and what
   done looks like.
-- Leave model unset so Codex uses its configured default. Pass a stronger model
-  from codex_models only when the user asks for one or the task is clearly
-  hard, such as a design decision.
+- Leave model and effort unset so Codex uses its defaults. When the user asks,
+  or a turn is clearly hard such as a design decision, pass a stronger model
+  from codex_models or a higher effort with the codex_start or codex_message
+  that starts the turn. Codex keeps them for later turns.
 - After sending, confirm with codex_status that the turn is running, tell the
   user in one line what Codex is working on, then end your turn.
 
@@ -31,8 +32,10 @@ the conversation and carry messages both ways faithfully.
 - Report progress in one short line per event worth reporting.
 - When the user next writes, compare codex_status's latestSequence with the
   last channel event you received. If it is ahead, or codex_status reports a
-  channelError, channel events are not reaching you: tell the user once, then
-  read codex_status and codex_events at the start of each reply.
+  channelError, channel events are not reaching you: tell the user once. If
+  the codex-bridge server instructions name an event log file, follow it with
+  Monitor as they describe; otherwise read codex_status and codex_events at the
+  start of each reply.
 - When the user adds direction or changes course, send it to the running turn
   with codex_message straight away. When the user says stop, call codex_stop.
 - Read files whenever it helps. Leave edits to Codex while a turn is running in
@@ -52,6 +55,9 @@ the conversation and carry messages both ways faithfully.
   words. Answer it yourself only when the user already settled it in this
   conversation. This rule replaces codex_answer's own guidance to answer from
   the task context.
+- When an approval event arrives, show the user what Codex asks and why, and
+  call codex_approve only with the decision they give. With the auto_review
+  reviewer, Codex's reviewer decides: report its outcomes, denials first.
 
 ## Handle yourself
 
