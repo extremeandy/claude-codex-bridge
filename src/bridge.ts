@@ -3,7 +3,9 @@ import { isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
 import type { ApprovalsReviewer } from "../.generated/v2/ApprovalsReviewer.ts";
+import type { AskForApproval } from "../.generated/v2/AskForApproval.ts";
 import type { CommandExecutionRequestApprovalResponse } from "../.generated/v2/CommandExecutionRequestApprovalResponse.ts";
+import type { FileChangeApprovalDecision } from "../.generated/v2/FileChangeApprovalDecision.ts";
 import type { FileChangeRequestApprovalResponse } from "../.generated/v2/FileChangeRequestApprovalResponse.ts";
 import type { FileUpdateChange } from "../.generated/v2/FileUpdateChange.ts";
 import type { PermissionsRequestApprovalResponse } from "../.generated/v2/PermissionsRequestApprovalResponse.ts";
@@ -12,7 +14,7 @@ import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUse
 import type { AppServer } from "./app-server.ts";
 
 /** The string approval policies; the granular object form is not offered. */
-export type ApprovalPolicy = "untrusted" | "on-request" | "never";
+export type ApprovalPolicy = Extract<AskForApproval, string>;
 /** Reviewers the bridge accepts; guardian_subagent is Codex's legacy alias for auto_review. */
 export type Reviewer = Exclude<ApprovalsReviewer, "guardian_subagent">;
 /** Settings sent when a thread is attached. A null reviewer is not sent, so Codex uses its configured reviewer. */
@@ -28,15 +30,10 @@ export const defaultSettings: ThreadSettings = {
 };
 /** Settings a caller or the operator may set; an omitted one falls back. */
 export type SettingsInput = {
-  sandbox?: SandboxMode;
-  approvalPolicy?: ApprovalPolicy;
-  approvalsReviewer?: Reviewer;
+  [K in keyof ThreadSettings]?: NonNullable<ThreadSettings[K]>;
 };
-export type ApprovalDecision =
-  | "accept"
-  | "acceptForSession"
-  | "decline"
-  | "cancel";
+/** The decisions codex_approve sends; every approval request kind takes them. */
+export type ApprovalDecision = FileChangeApprovalDecision;
 
 export type BridgeEvent = {
   sequence: number;
@@ -53,6 +50,23 @@ export const sandboxRank = {
   "workspace-write": 1,
   "danger-full-access": 2,
 } satisfies Record<SandboxMode, number>;
+// The keys are the accepted values. `satisfies` makes tsc reject a value that
+// Codex adds until it is listed here.
+export const approvalPolicies = {
+  untrusted: true,
+  "on-request": true,
+  never: true,
+} satisfies Record<ApprovalPolicy, true>;
+export const reviewers = {
+  user: true,
+  auto_review: true,
+} satisfies Record<Reviewer, true>;
+export const approvalDecisions = {
+  accept: true,
+  acceptForSession: true,
+  decline: true,
+  cancel: true,
+} satisfies Record<ApprovalDecision, true>;
 
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type ApprovalRequest = Extract<
@@ -67,12 +81,13 @@ type ApprovalRequest = Extract<
 type PendingRequest =
   | ApprovalRequest
   | Extract<ServerRequest, { method: "item/tool/requestUserInput" }>;
-const handledRequests: PendingRequest["method"][] = [
-  "item/tool/requestUserInput",
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  "item/permissions/requestApproval",
-];
+// A Record, so tsc rejects a PendingRequest method missing here.
+const handledRequests: Record<PendingRequest["method"], true> = {
+  "item/tool/requestUserInput": true,
+  "item/commandExecution/requestApproval": true,
+  "item/fileChange/requestApproval": true,
+  "item/permissions/requestApproval": true,
+};
 type Approval = {
   requestId: string;
   method: ApprovalRequest["method"];
@@ -673,7 +688,7 @@ export class Bridge {
 }
 
 function isPending(request: ServerRequest): request is PendingRequest {
-  return (handledRequests as string[]).includes(request.method);
+  return Object.hasOwn(handledRequests, request.method);
 }
 
 function approvalResponse(

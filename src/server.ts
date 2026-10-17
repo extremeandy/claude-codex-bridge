@@ -4,37 +4,44 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import manifest from "../package.json" with { type: "json" };
 import { AppServer } from "./app-server.ts";
 import {
+  approvalDecisions,
+  approvalPolicies,
   Bridge,
   defaultSettings,
+  reviewers,
   type SettingsInput,
   sandboxRank,
 } from "./bridge.ts";
 
+/** A zod enum of a record's keys, which bridge.ts checks against Codex's types. */
+const keys = <T extends string>(record: Record<T, unknown>) =>
+  z.enum(Object.keys(record) as [T, ...T[]]);
+
 const id = z.string().min(1);
 const text = z.string().min(1).max(100_000);
-const sandbox = z.enum(Object.keys(sandboxRank) as SandboxMode[]);
-const approvalPolicy = z.enum(["untrusted", "on-request", "never"]);
-const approvalsReviewer = z.enum(["user", "auto_review"]);
+const sandbox = keys(sandboxRank);
+const approvalPolicy = keys(approvalPolicies);
+const approvalsReviewer = keys(reviewers);
 
 // Only an unset variable keeps the built-in default. An empty value is
 // rejected like an unknown one, because treating an empty sandbox as unset
 // would allow danger-full-access.
-function fromEnv<T extends string>(
+function fromEnv<T extends z.ZodEnum>(
+  env: NodeJS.ProcessEnv,
   name: string,
-  schema: z.ZodEnum<{ [K in T]: K }>,
-  value: string | undefined,
-): T | undefined {
+  schema: T,
+): z.output<T> | undefined {
+  const value = env[name];
   if (value === undefined) return undefined;
   const parsed = schema.safeParse(value);
   if (!parsed.success)
     throw new Error(
       `${name} must be one of ${schema.options.join(", ")}; got ${JSON.stringify(value)}`,
     );
-  return parsed.data as T;
+  return parsed.data;
 }
 
 /**
@@ -44,16 +51,16 @@ function fromEnv<T extends string>(
  */
 export function settingsFromEnv(env: NodeJS.ProcessEnv): SettingsInput {
   return {
-    sandbox: fromEnv("CODEX_BRIDGE_SANDBOX", sandbox, env.CODEX_BRIDGE_SANDBOX),
+    sandbox: fromEnv(env, "CODEX_BRIDGE_SANDBOX", sandbox),
     approvalPolicy: fromEnv(
+      env,
       "CODEX_BRIDGE_APPROVAL_POLICY",
       approvalPolicy,
-      env.CODEX_BRIDGE_APPROVAL_POLICY,
     ),
     approvalsReviewer: fromEnv(
+      env,
       "CODEX_BRIDGE_APPROVALS_REVIEWER",
       approvalsReviewer,
-      env.CODEX_BRIDGE_APPROVALS_REVIEWER,
     ),
   };
 }
@@ -112,7 +119,7 @@ const definitions = {
     schema: z.object({
       threadId: id,
       requestId: id,
-      decision: z.enum(["accept", "acceptForSession", "decline", "cancel"]),
+      decision: keys(approvalDecisions),
     }),
   },
   codex_status: {
