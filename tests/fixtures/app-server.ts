@@ -82,6 +82,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       const threadId = `thread-${++sequence}`;
       const thread = {
         model: params.model ?? "fixture",
+        // Like Codex's thread/start, accept any effort; a bad one fails the turn.
+        effort: params.config?.model_reasoning_effort,
         cwd: params.cwd,
         turnId: "",
         prompt: "",
@@ -141,7 +143,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id, error: { code: -1, message: "model unavailable" } });
         break;
       }
-      if (params.effort === "missing") {
+      if ((params.effort ?? thread.effort) === "missing") {
         send({ id, error: { code: -1, message: "effort unavailable" } });
         break;
       }

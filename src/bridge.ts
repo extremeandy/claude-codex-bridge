@@ -16,6 +16,8 @@ export type BridgeEvent = {
 };
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type TurnSettings = { model?: string; effort?: ReasoningEffort };
+/** The bridge's own model and effort for codex_start calls that omit them. */
+export type StartDefaults = TurnSettings;
 type Session = {
   threadId: string;
   model: string;
@@ -58,6 +60,7 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    private defaults: StartDefaults = {},
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -90,9 +93,15 @@ export class Bridge {
       throw new Error("cwd must be an existing absolute directory");
     }
     await this.rpc.connect();
+    const effort = input.effort ?? this.defaults.effort;
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
-      model: input.model,
+      model: input.model ?? this.defaults.model,
+      // thread/start has no effort field. As a config override the effort
+      // belongs to the thread itself, so later turns and resumes keep it even
+      // when the first turn fails.
+      config:
+        effort === undefined ? undefined : { model_reasoning_effort: effort },
       serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
@@ -101,7 +110,7 @@ export class Bridge {
     const session = this.attach(result.thread.id, result.model, result.cwd);
     return this.lock(session, async () => {
       try {
-        await this.begin(session, input.prompt, { effort: input.effort });
+        await this.begin(session, input.prompt);
       } catch (error) {
         // The thread exists and stays attached, so the caller needs its id to retry or resume.
         throw new Error(
@@ -117,6 +126,7 @@ export class Bridge {
     if (this.sessions.has(threadId))
       return this.snapshot(this.session(threadId));
     await this.rpc.connect();
+    // No bridge defaults here: a resumed thread keeps its own last model and effort.
     const result = await this.rpc.call("thread/resume", {
       threadId,
       approvalPolicy: "never",
