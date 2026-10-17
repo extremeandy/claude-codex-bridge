@@ -686,8 +686,13 @@ function approvalResponse(
   switch (request.method) {
     case "item/commandExecution/requestApproval": {
       const offered = request.params.availableDecisions;
-      // Refusals are always allowed: they never widen access, and Codex
-      // honours decline even when availableDecisions does not list it.
+      // Refusals are always allowed: they never widen access, and Codex's
+      // app-server turns decline and cancel into a denial or an abort without
+      // checking availableDecisions. See
+      // on_command_execution_request_approval_response in
+      // codex-rs/app-server/src/bespoke_event_handling.rs (rust-v0.153.4).
+      // codex_approve cannot send the amendment decisions, so a request that
+      // offers only those can be refused but not accepted.
       if (
         (decision === "accept" || decision === "acceptForSession") &&
         offered &&

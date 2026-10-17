@@ -252,10 +252,16 @@ test("MCP approval requests surface as events and codex_approve answers them", a
   expect(client.getInstructions()).toContain(
     "call codex_approve only with the decision the user explicitly gave",
   );
+  expect(client.getInstructions()).toContain(
+    "can still let a single command run outside the sandbox",
+  );
   const approve = (await client.listTools()).tools.find(
     (tool) => tool.name === "codex_approve",
   );
   expect(approve?.description).toContain("Never decide on your own judgment");
+  expect(approve?.description).toContain(
+    "cannot send Codex's acceptWithExecpolicyAmendment or applyNetworkPolicyAmendment",
+  );
   const session = await call("codex_start", {
     cwd: process.cwd(),
     prompt: "approve_command",

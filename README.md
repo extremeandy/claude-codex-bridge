@@ -215,7 +215,10 @@ request reaches Claude as an `approval` event with the command, the proposed
 diff or the requested permissions. The turn waits with status
 `waiting_approval` until Claude passes your decision with `codex_approve`:
 `accept`, `acceptForSession`, `decline`, or `cancel` (decline and interrupt the
-turn). A request answered elsewhere, such as in another client of the same
+turn). `codex_approve` cannot send Codex's `acceptWithExecpolicyAmendment` or
+`applyNetworkPolicyAmendment` decisions, so a command request that offers them
+can only be accepted plainly, if it also offers `accept` or `acceptForSession`,
+or refused. A request answered elsewhere, such as in another client of the same
 Codex app-server, or left open when the turn ends, is cleared. With
 `auto_review`, a Codex reviewer agent decides, and the bridge reports each
 decision as an `auto_review` event.
@@ -246,7 +249,11 @@ unknown value.
 `CODEX_BRIDGE_SANDBOX` also limits Codex regardless of what Claude asks for: the
 mode it names is both the default and the widest allowed. The bridge refuses a
 `sandbox` wider than it (`read-only` < `workspace-write` < `danger-full-access`)
-and accepts a narrower one. The approval variables set defaults only.
+and accepts a narrower one. The cap applies to the sandbox mode only: with an
+`approvalPolicy` other than `never`, a request that you or the `auto_review`
+reviewer approve can still let a single command run beyond the sandbox. The
+approval variables set defaults only, so Claude can still ask for another
+`approvalPolicy` or `approvalsReviewer`.
 
 A thread keeps its settings while the bridge has it attached, and
 `codex_resume` with a different value is an error. The bridge does not save a
