@@ -213,16 +213,28 @@ its own app-server. Its turns run in the daemon:
 
 - Exiting Claude closes only the bridge's connection. Running turns continue.
 - Another Claude session can call `codex_resume` with the `threadId` while the
-  turn is still running, and receives its live progress from then on.
+  turn is still running. It receives the turn's live progress from then on and
+  can steer it with `codex_message`.
 - `codex agents` lists the daemon's threads, including the bridge's, and can
-  open them.
+  open them. The Codex desktop app does not use the daemon, so it does not show
+  these turns.
+- The daemon unloads a thread 30 minutes after its last connection leaves it.
+  Whether a running turn survives that with no connection attached is untested.
 
-If the daemon is not running, Codex tools fail with a connection error. Run
-`codex app-server daemon version` to check it and
+If the connection to the daemon drops, for example because the daemon
+restarted, the bridge marks its sessions `unavailable`. The next
+`codex_models`, `codex_start`, `codex_message`, `codex_stop` or `codex_resume`
+call opens a new connection and resumes those sessions, taking their status
+from the daemon. Questions Codex asked on the dropped connection are lost and
+cannot be answered. If the daemon is not running, Codex tools fail with a
+connection error, and each later call tries to connect again.
+
+Run `codex app-server daemon version` to check the daemon and
 `codex app-server daemon stop` to stop it. Starting the daemon also starts a
 Codex updater that installs updates on a schedule and restarts the daemon to
-apply them; the updater keeps running after `daemon stop`. Stopping or
-restarting the daemon can interrupt running turns.
+apply them, which can interrupt a running turn. The updater keeps running after
+`daemon stop`. Stopping or restarting the daemon yourself can also interrupt
+running turns.
 
 ## Update or uninstall
 
