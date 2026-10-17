@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
 import type { AppServer } from "./app-server.ts";
 
@@ -18,6 +19,7 @@ type Session = {
   threadId: string;
   model: string;
   cwd: string;
+  sandbox: SandboxMode;
   status:
     | "idle"
     | "running"
@@ -82,10 +84,12 @@ export class Bridge {
     cwd: string;
     model?: string;
     serviceTier?: string;
+    sandbox?: SandboxMode;
   }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
+    const sandbox = input.sandbox ?? "danger-full-access";
     await this.rpc.connect();
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
@@ -93,26 +97,45 @@ export class Bridge {
       serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     return this.lock(session, async () => {
       await this.begin(session, input.prompt);
       return this.snapshot(session);
     });
   }
 
-  async resume(threadId: string) {
-    if (this.sessions.has(threadId))
-      return this.snapshot(this.session(threadId));
+  async resume(threadId: string, sandbox?: SandboxMode) {
+    const attached = this.sessions.get(threadId);
+    if (attached) {
+      // The sandbox is sent only when a thread is attached, so a different
+      // mode for an attached thread would otherwise be silently ignored.
+      if (sandbox && sandbox !== attached.sandbox)
+        throw new Error(
+          `Thread is already attached with sandbox ${attached.sandbox}`,
+        );
+      return this.snapshot(attached);
+    }
+    sandbox ??= "danger-full-access";
     await this.rpc.connect();
     const result = await this.rpc.call("thread/resume", {
       threadId,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
       initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
@@ -200,11 +223,17 @@ export class Bridge {
     };
   }
 
-  private attach(threadId: string, model: string, cwd: string) {
+  private attach(
+    threadId: string,
+    model: string,
+    cwd: string,
+    sandbox: SandboxMode,
+  ) {
     const session: Session = {
       threadId,
       model,
       cwd,
+      sandbox,
       status: "idle",
       turnId: null,
       lastTurnId: null,

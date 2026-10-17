@@ -99,6 +99,19 @@ test("MCP advertises channel capability, typed tools, and nonblocking push event
     Array,
   );
   await call("codex_resume", { threadId: "saved" });
+  expect(
+    (await call("codex_resume", { threadId: "readonly", sandbox: "read-only" }))
+      .sandbox,
+  ).toBe("read-only");
+  expect(
+    (
+      await call("codex_start", {
+        cwd: process.cwd(),
+        prompt: "sandbox",
+        sandbox: "workspace-write",
+      })
+    ).lastAnswer,
+  ).toBe("workspace-write");
 });
 
 test("MCP question answer reaches Codex and tool errors use isError", async () => {
@@ -124,6 +137,14 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
       await client.callTool({
         name: "codex_start",
         arguments: { cwd: process.cwd() },
+      })
+    ).isError,
+  ).toBe(true);
+  expect(
+    (
+      await client.callTool({
+        name: "codex_start",
+        arguments: { cwd: process.cwd(), prompt: "work", sandbox: "none" },
       })
     ).isError,
   ).toBe(true);

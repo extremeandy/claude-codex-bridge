@@ -153,6 +153,11 @@ Claude can list available models with `codex_models`. An explicitly selected
 model is requested without provider fallback. Ask for a service tier such as
 `fast` to override the `service_tier` in your Codex config for that thread.
 
+Ask for a `read-only` or `workspace-write` sandbox to restrict a thread:
+
+> Start Codex with a read-only sandbox in /absolute/path/to/my-project and
+> review the authentication code.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |
@@ -180,10 +185,17 @@ turn. A successful notification write does not confirm that Claude has read it.
 Codex sessions appear through tools and messages, not as native Claude agents
 in its subagent panel.
 
-**Codex runs with `danger-full-access` and `approvalPolicy: never`.** It can
-modify files and run commands with the permissions of your local user without
-requesting approval. Claude's tool permissions do not sandbox Codex. Choose the
-project directory and tasks with that execution mode in mind.
+**By default, Codex runs with `danger-full-access` and `approvalPolicy: never`.**
+It can modify files and run commands with the permissions of your local user
+without requesting approval. Claude's tool permissions do not sandbox Codex.
+Choose the project directory and tasks with that execution mode in mind.
+
+`codex_start` and `codex_resume` accept an optional `sandbox` of `read-only`,
+`workspace-write`, or `danger-full-access`. The approval policy stays `never`,
+and the bridge rejects approval requests, so a command that needs more than the
+sandbox allows fails instead of asking. The bridge does not remember a thread's
+sandbox: pass it again to `codex_resume`, or the thread resumes with
+`danger-full-access`.
 
 The plugin uses Codex's existing authentication and configuration. It adds no
 API proxy, model impersonation, interception hook, or global timeout override.

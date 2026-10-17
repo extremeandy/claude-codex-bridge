@@ -225,6 +225,35 @@ test("resume attaches saved history and active turn IDs; model catalog supports 
   expect((await bridge.message("active", "hello")).mode).toBe("steered");
 });
 
+test("the sandbox defaults to danger-full-access and an explicit mode reaches Codex on start and resume", async () => {
+  const { bridge } = fixture();
+  const full = await bridge.start({ cwd, prompt: "sandbox" });
+  expect(full.sandbox).toBe("danger-full-access");
+  expect(full.lastAnswer).toBe("danger-full-access");
+  const readOnly = await bridge.start({
+    cwd,
+    prompt: "sandbox",
+    sandbox: "read-only",
+  });
+  expect(readOnly.sandbox).toBe("read-only");
+  expect(readOnly.lastAnswer).toBe("read-only");
+  expect((await bridge.resume("saved")).sandbox).toBe("danger-full-access");
+  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
+    "workspace-write",
+  );
+  await bridge.message("workspace", "sandbox");
+  expect(bridge.status("workspace").sessions[0].lastAnswer).toBe(
+    "workspace-write",
+  );
+  expect((await bridge.resume("workspace")).sandbox).toBe("workspace-write");
+  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
+    "workspace-write",
+  );
+  await expect(
+    bridge.resume("workspace", "danger-full-access"),
+  ).rejects.toThrow("already attached with sandbox workspace-write");
+});
+
 test("bounded journal signals eviction and oversized final answers signal truncation", async () => {
   const { bridge } = fixture(undefined, undefined, 2);
   const session = await bridge.start({ cwd, prompt: "long" });
