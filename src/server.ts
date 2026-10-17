@@ -6,7 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import manifest from "../package.json" with { type: "json" };
-import { AppServer } from "./app-server.ts";
+import { AppServer, type AppServerConfig } from "./app-server.ts";
 import {
   approvalDecisions,
   approvalPolicies,
@@ -26,6 +26,7 @@ const text = z.string().min(1).max(100_000);
 const sandbox = keys(sandboxRank);
 const approvalPolicy = keys(approvalPolicies);
 const approvalsReviewer = keys(reviewers);
+const appServerMode = z.enum(["daemon"]);
 
 /** What createServer needs besides the app-server connection. */
 export type ServerOptions = {
@@ -42,8 +43,16 @@ export type ServerOptions = {
  * danger-full-access, and a blank model or effort would silently follow the
  * Codex config.
  */
-export function configFromEnv(env: NodeJS.ProcessEnv): ServerOptions {
+export function configFromEnv(
+  env: NodeJS.ProcessEnv,
+): ServerOptions & { appServer: AppServerConfig } {
   return {
+    // Unset starts a private app-server; "daemon" uses the shared daemon,
+    // whose turns outlive the bridge.
+    appServer: {
+      daemon:
+        fromEnv(env, "CODEX_BRIDGE_APP_SERVER", appServerMode) === "daemon",
+    },
     configured: {
       // Model and effort pass through unchecked: ReasoningEffort is an open
       // string and models vary by account, so Codex validates both per call.

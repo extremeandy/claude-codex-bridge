@@ -7,10 +7,15 @@ import { configFromEnv, createServer } from "./server.ts";
 export async function main(
   input: Readable = process.stdin,
   output: Writable = process.stdout,
-  rpc = new AppServer(),
+  rpc?: AppServer,
   env: NodeJS.ProcessEnv = process.env,
 ) {
-  const { server, bridge } = createServer(rpc, configFromEnv(env));
+  // Read before anything starts, so a bad setting stops startup.
+  const { appServer, ...options } = configFromEnv(env);
+  const { server, bridge } = createServer(
+    rpc ?? new AppServer(appServer),
+    options,
+  );
   let closing: Promise<void> | undefined;
   const shutdown = () => {
     closing ??= (async () => {

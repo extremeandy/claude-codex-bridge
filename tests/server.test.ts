@@ -21,10 +21,12 @@ const cleanups: (() => Promise<void>)[] = [];
 test("stdio EOF closes the Codex child and shutdown is idempotent", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
-  const rpc = new AppServer([
-    process.execPath,
-    resolve(import.meta.dirname, "fixtures/app-server.ts"),
-  ]);
+  const rpc = new AppServer({
+    command: [
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ],
+  });
   const { bridge, shutdown } = await main(input, output, rpc, {});
   await bridge.models();
   input.end();
@@ -38,10 +40,12 @@ afterEach(async () => {
 });
 
 async function connect(options: Omit<ServerOptions, "progressMs"> = {}) {
-  const rpc = new AppServer([
-    process.execPath,
-    resolve(import.meta.dirname, "fixtures/app-server.ts"),
-  ]);
+  const rpc = new AppServer({
+    command: [
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ],
+  });
   const { server, bridge } = createServer(rpc, { progressMs: 5, ...options });
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
@@ -201,10 +205,12 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
       ?.sandbox,
   ).toBe("workspace-write");
   for (const value of ["", "readonly"]) {
-    const rpc = new AppServer([
-      process.execPath,
-      resolve(import.meta.dirname, "fixtures/app-server.ts"),
-    ]);
+    const rpc = new AppServer({
+      command: [
+        process.execPath,
+        resolve(import.meta.dirname, "fixtures/app-server.ts"),
+      ],
+    });
     await expect(
       main(new PassThrough(), new PassThrough(), rpc, {
         CODEX_BRIDGE_SANDBOX: value,
@@ -253,10 +259,12 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
 test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults and reject empty values", async () => {
   expect(configFromEnv({}).configured).toEqual({});
   for (const name of ["CODEX_BRIDGE_MODEL", "CODEX_BRIDGE_EFFORT"]) {
-    const rpc = new AppServer([
-      process.execPath,
-      resolve(import.meta.dirname, "fixtures/app-server.ts"),
-    ]);
+    const rpc = new AppServer({
+      command: [
+        process.execPath,
+        resolve(import.meta.dirname, "fixtures/app-server.ts"),
+      ],
+    });
     await expect(
       main(new PassThrough(), new PassThrough(), rpc, { [name]: " " }),
     ).rejects.toThrow(`${name} must not be empty`);
@@ -305,10 +313,12 @@ test("approval env defaults are validated and unset keeps never with no reviewer
     ["CODEX_BRIDGE_APPROVAL_POLICY", "untrusted, on-request, never"],
     ["CODEX_BRIDGE_APPROVALS_REVIEWER", "user, auto_review"],
   ]) {
-    const rpc = new AppServer([
-      process.execPath,
-      resolve(import.meta.dirname, "fixtures/app-server.ts"),
-    ]);
+    const rpc = new AppServer({
+      command: [
+        process.execPath,
+        resolve(import.meta.dirname, "fixtures/app-server.ts"),
+      ],
+    });
     await expect(
       main(new PassThrough(), new PassThrough(), rpc, { [name]: "" }),
     ).rejects.toThrow(`${name} must be one of ${options}; got ""`);
@@ -420,10 +430,12 @@ test("CODEX_BRIDGE_EVENT_LOG_DIR must be absolute; empty or relative fails start
     configFromEnv({ CODEX_BRIDGE_EVENT_LOG_DIR: "/tmp/logs" }).eventLogDir,
   ).toBe("/tmp/logs");
   for (const value of ["", "logs"]) {
-    const rpc = new AppServer([
-      process.execPath,
-      resolve(import.meta.dirname, "fixtures/app-server.ts"),
-    ]);
+    const rpc = new AppServer({
+      command: [
+        process.execPath,
+        resolve(import.meta.dirname, "fixtures/app-server.ts"),
+      ],
+    });
     await expect(
       main(new PassThrough(), new PassThrough(), rpc, {
         CODEX_BRIDGE_EVENT_LOG_DIR: value,
