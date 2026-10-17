@@ -477,6 +477,30 @@ test("interruption clears pending approvals", async () => {
   expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
 });
 
+test("closing drops pending questions and approvals and refuses later answers", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId } = await approval(bridge, "approve_command");
+  const asked = await bridge.start({ cwd, prompt: "question" });
+  await until(
+    () => bridge.status(asked.threadId).sessions[0].questions.length > 0,
+  );
+  const question = bridge.status(asked.threadId).sessions[0].questions[0];
+  await bridge.close();
+  expect(bridge.status()).toMatchObject({
+    failure: "Bridge closed",
+    sessions: [
+      { status: "unavailable", approvals: [], questions: [] },
+      { status: "unavailable", approvals: [], questions: [] },
+    ],
+  });
+  expect(() => bridge.approve(threadId, requestId, "decline")).toThrow(
+    "Bridge closed",
+  );
+  expect(() =>
+    bridge.answer(asked.threadId, question.requestId, { choice: ["A"] }),
+  ).toThrow("Bridge closed");
+});
+
 test("auto-review decisions surface as events", async () => {
   const { bridge, events } = fixture();
   await bridge.start({ cwd, prompt: "auto_review" });

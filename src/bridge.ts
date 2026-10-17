@@ -132,14 +132,9 @@ export class Bridge {
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
       this.failure = error.message;
-      this.requests.clear();
-      this.fileChanges.clear();
+      this.markUnavailable();
       for (const session of this.sessions.values()) {
         this.flush(session.threadId);
-        session.status = "unavailable";
-        session.turnId = null;
-        session.questions = [];
-        session.approvals = [];
         this.emit(session.threadId, "unavailable", error.message);
       }
     };
@@ -257,6 +252,7 @@ export class Bridge {
     requestId: string,
     answers: Record<string, string[]>,
   ) {
+    if (this.closed) throw new Error("Bridge closed");
     const request = this.requests.get(requestId);
     if (
       request?.method !== "item/tool/requestUserInput" ||
@@ -282,6 +278,7 @@ export class Bridge {
   }
 
   approve(threadId: string, requestId: string, decision: ApprovalDecision) {
+    if (this.closed) throw new Error("Bridge closed");
     const request = this.requests.get(requestId);
     if (
       !request ||
@@ -515,6 +512,7 @@ export class Bridge {
   }
 
   private request(request: ServerRequest) {
+    if (this.closed) return;
     if (!isPending(request) || !this.sessions.has(request.params.threadId)) {
       this.rpc.reject(
         request.id,
@@ -637,9 +635,26 @@ export class Bridge {
     });
   }
 
+  /**
+   * Marks every session unavailable and forgets its pending questions and
+   * approvals, because the app-server can no longer take an answer.
+   */
+  private markUnavailable() {
+    this.requests.clear();
+    this.fileChanges.clear();
+    for (const session of this.sessions.values()) {
+      session.status = "unavailable";
+      session.turnId = null;
+      session.questions = [];
+      session.approvals = [];
+    }
+  }
+
   async close() {
     this.closed = true;
     for (const threadId of this.buffers.keys()) this.flush(threadId);
+    this.failure ??= "Bridge closed";
+    this.markUnavailable();
     await this.rpc.close();
     await this.delivery;
   }
