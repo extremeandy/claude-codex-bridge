@@ -101,6 +101,24 @@ test("MCP advertises channel capability, typed tools, and nonblocking push event
   await call("codex_resume", { threadId: "saved" });
 });
 
+test("MCP passes per-turn model and effort to new turns", async () => {
+  const { call } = await connect();
+  const session = await call("codex_start", {
+    cwd: process.cwd(),
+    prompt: "settings",
+    effort: "high",
+  });
+  expect(session.lastAnswer).toBe("fixture/high");
+  const next = await call("codex_message", {
+    threadId: session.threadId,
+    message: "settings",
+    model: "fixture-2",
+    effort: "low",
+  });
+  expect(next.model).toBe("fixture-2");
+  expect(next.lastAnswer).toBe("fixture-2/low");
+});
+
 test("MCP question answer reaches Codex and tool errors use isError", async () => {
   const { call, events, client } = await connect();
   const session = await call("codex_start", {

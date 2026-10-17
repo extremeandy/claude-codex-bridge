@@ -66,6 +66,53 @@ test("acceptance returns while Codex runs; progress arrives and steering affects
   expect((await bridge.stop(session.threadId)).requested).toBe(false);
 });
 
+test("new turns apply model and effort, which stay the thread's defaults", async () => {
+  const { bridge } = fixture();
+  const session = await bridge.start({
+    cwd,
+    prompt: "settings",
+    effort: "high",
+  });
+  expect(session.lastAnswer).toBe("fixture/high");
+  const switched = await bridge.message(session.threadId, "settings", {
+    model: "fixture-2",
+  });
+  expect(switched.mode).toBe("new_turn");
+  expect(switched.model).toBe("fixture-2");
+  expect(switched.lastAnswer).toBe("fixture-2/high");
+  const lowered = await bridge.message(session.threadId, "settings", {
+    effort: "low",
+  });
+  expect(lowered.lastAnswer).toBe("fixture-2/low");
+  expect(bridge.status(session.threadId).sessions[0].model).toBe("fixture-2");
+});
+
+test("model or effort on a running turn is refused instead of steering without them", async () => {
+  const { bridge, events } = fixture();
+  const session = await bridge.start({ cwd, prompt: "work" });
+  for (const settings of [{ model: "fixture-2" }, { effort: "low" }]) {
+    await expect(
+      bridge.message(session.threadId, "steer", settings),
+    ).rejects.toThrow("only when a new turn starts");
+  }
+  const current = bridge.status(session.threadId).sessions[0];
+  expect(current.status).toBe("running");
+  expect(current.model).toBe("fixture");
+  expect(events.some((event) => event.text.startsWith("steered"))).toBe(false);
+  expect((await bridge.message(session.threadId, "steer")).mode).toBe(
+    "steered",
+  );
+});
+
+test("a rejected per-turn model leaves the recorded model unchanged", async () => {
+  const { bridge } = fixture();
+  const session = await bridge.start({ cwd, prompt: "instant" });
+  await expect(
+    bridge.message(session.threadId, "instant", { model: "missing" }),
+  ).rejects.toThrow("model unavailable");
+  expect(bridge.status(session.threadId).sessions[0].model).toBe("fixture");
+});
+
 test("a turn that completes before its start response stays completed", async () => {
   const { bridge } = fixture();
   const session = await bridge.start({ cwd, prompt: "instant" });

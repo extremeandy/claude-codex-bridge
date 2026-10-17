@@ -4,7 +4,13 @@ const mode = process.argv[2];
 if (mode === "stubborn") process.on("SIGTERM", () => {});
 const threads = new Map<
   string,
-  { model: string; cwd: string; turnId: string; prompt: string }
+  {
+    model: string;
+    effort?: string;
+    cwd: string;
+    turnId: string;
+    prompt: string;
+  }
 >();
 let sequence = 0;
 const send = (message: object) =>
@@ -131,6 +137,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id, error: { code: -1, message: "turn rejected" } });
         break;
       }
+      if (params.model === "missing") {
+        send({ id, error: { code: -1, message: "model unavailable" } });
+        break;
+      }
+      thread.model = params.model ?? thread.model;
+      thread.effort = params.effort ?? thread.effort;
       if (prompt === "crash") {
         process.exit(7);
       }
@@ -161,6 +173,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         item: { type: "userMessage" },
       });
       if (prompt === "instant") finish(params.threadId);
+      if (prompt === "settings")
+        finish(
+          params.threadId,
+          "completed",
+          `${thread.model}/${thread.effort}`,
+        );
       if (prompt === "failed") {
         notify("error", {
           threadId: params.threadId,
@@ -205,7 +223,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           method: "item/permissions/requestApproval",
           params: { threadId: params.threadId },
         });
-      } else if (!["instant", "failed", "long"].includes(prompt)) {
+      } else if (!["instant", "settings", "failed", "long"].includes(prompt)) {
         setTimeout(() => {
           notify("item/started", {
             threadId: params.threadId,
