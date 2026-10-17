@@ -5,9 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import { AppServer } from "../src/app-server.ts";
 import { main } from "../src/index.ts";
-import { createServer } from "../src/server.ts";
+import { createServer, sandboxFromEnv } from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -30,12 +31,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect() {
+async function connect(defaultSandbox?: SandboxMode) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5);
+  const { server, bridge } = createServer(rpc, 5, defaultSandbox);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -148,4 +149,27 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
       })
     ).isError,
   ).toBe(true);
+});
+
+test("CODEX_BRIDGE_SANDBOX sets the default sandbox and rejects unknown modes", async () => {
+  expect(sandboxFromEnv(undefined)).toBe("danger-full-access");
+  expect(sandboxFromEnv("")).toBe("danger-full-access");
+  expect(sandboxFromEnv("workspace-write")).toBe("workspace-write");
+  expect(() => sandboxFromEnv("readonly")).toThrow(
+    "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
+  );
+  const { client, call } = await connect("read-only");
+  expect(client.getInstructions()).toContain("(default read-only)");
+  const tools = (await client.listTools()).tools;
+  for (const name of ["codex_start", "codex_resume"])
+    expect(tools.find((tool) => tool.name === name)?.description).toContain(
+      "defaults to read-only",
+    );
+  expect(
+    tools.find((tool) => tool.name === "codex_status")?.description,
+  ).not.toContain("sandbox");
+  expect(
+    (await call("codex_start", { cwd: process.cwd(), prompt: "sandbox" }))
+      .lastAnswer,
+  ).toBe("read-only");
 });

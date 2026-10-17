@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import { AppServer } from "../src/app-server.ts";
 import { Bridge, type BridgeEvent } from "../src/bridge.ts";
 
@@ -21,6 +22,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
+  sandbox?: SandboxMode,
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -35,6 +37,7 @@ function fixture(
       }),
     10,
     limit,
+    sandbox,
   );
   cleanup.push(bridge);
   return { bridge, rpc, events };
@@ -252,6 +255,20 @@ test("the sandbox defaults to danger-full-access and an explicit mode reaches Co
   await expect(
     bridge.resume("workspace", "danger-full-access"),
   ).rejects.toThrow("already attached with sandbox workspace-write");
+});
+
+test("a configured default sandbox applies to starts and resumes that omit one", async () => {
+  const { bridge } = fixture(undefined, undefined, 200, "read-only");
+  const started = await bridge.start({ cwd, prompt: "sandbox" });
+  expect(started.sandbox).toBe("read-only");
+  expect(started.lastAnswer).toBe("read-only");
+  expect(
+    (await bridge.start({ cwd, prompt: "sandbox", sandbox: "workspace-write" }))
+      .lastAnswer,
+  ).toBe("workspace-write");
+  expect((await bridge.resume("saved")).sandbox).toBe("read-only");
+  await bridge.message("saved", "sandbox");
+  expect(bridge.status("saved").sessions[0].lastAnswer).toBe("read-only");
 });
 
 test("bounded journal signals eviction and oversized final answers signal truncation", async () => {

@@ -193,9 +193,14 @@ Choose the project directory and tasks with that execution mode in mind.
 `codex_start` and `codex_resume` accept an optional `sandbox` of `read-only`,
 `workspace-write`, or `danger-full-access`. The approval policy stays `never`,
 and the bridge rejects approval requests, so a command that needs more than the
-sandbox allows fails instead of asking. The bridge does not remember a thread's
-sandbox: pass it again to `codex_resume`, or the thread resumes with
-`danger-full-access`.
+sandbox allows fails instead of asking.
+
+To change the default, set `CODEX_BRIDGE_SANDBOX` to one of those modes in the
+environment Claude Code starts from, for example
+`CODEX_BRIDGE_SANDBOX=workspace-write claude`. The bridge refuses to start with
+an unknown mode. The default also applies when `codex_resume` omits `sandbox`:
+the bridge does not remember a thread's sandbox, so a thread started with a
+different mode resumes with the default.
 
 The plugin uses Codex's existing authentication and configuration. It adds no
 API proxy, model impersonation, interception hook, or global timeout override.

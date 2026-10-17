@@ -58,6 +58,7 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    private defaultSandbox: SandboxMode = "danger-full-access",
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -89,7 +90,7 @@ export class Bridge {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
-    const sandbox = input.sandbox ?? "danger-full-access";
+    const sandbox = input.sandbox ?? this.defaultSandbox;
     await this.rpc.connect();
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
@@ -122,7 +123,7 @@ export class Bridge {
         );
       return this.snapshot(attached);
     }
-    sandbox ??= "danger-full-access";
+    sandbox ??= this.defaultSandbox;
     await this.rpc.connect();
     const result = await this.rpc.call("thread/resume", {
       threadId,
