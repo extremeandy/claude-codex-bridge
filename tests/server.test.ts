@@ -6,8 +6,9 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
 import { AppServer } from "../src/app-server.ts";
+import type { TurnSettings } from "../src/bridge.ts";
 import { main } from "../src/index.ts";
-import { createServer } from "../src/server.ts";
+import { createServer, defaultsFromEnv } from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -30,12 +31,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect() {
+async function connect(defaults: TurnSettings = {}) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5);
+  const { server, bridge } = createServer(rpc, 5, defaults);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -161,4 +162,45 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
       })
     ).isError,
   ).toBe(true);
+});
+
+test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults", async () => {
+  expect(defaultsFromEnv({})).toEqual({});
+  expect(
+    defaultsFromEnv({ CODEX_BRIDGE_MODEL: "", CODEX_BRIDGE_EFFORT: "" }),
+  ).toEqual({});
+  expect(
+    defaultsFromEnv({
+      CODEX_BRIDGE_MODEL: "fixture-2",
+      CODEX_BRIDGE_EFFORT: "high",
+    }),
+  ).toEqual({ model: "fixture-2", effort: "high" });
+  const { client, call } = await connect({
+    model: "fixture-2",
+    effort: "high",
+  });
+  const help =
+    "Without model, codex_start uses fixture-2. Without effort, codex_start uses reasoning effort high.";
+  expect(client.getInstructions()).toContain(help);
+  const tools = (await client.listTools()).tools;
+  expect(
+    tools.find((tool) => tool.name === "codex_start")?.description,
+  ).toContain(help);
+  expect(
+    tools.find((tool) => tool.name === "codex_message")?.description,
+  ).not.toContain("fixture-2");
+  expect(
+    (await call("codex_start", { cwd: process.cwd(), prompt: "settings" }))
+      .lastAnswer,
+  ).toBe("fixture-2/high");
+});
+
+test("without defaults, instructions and descriptions name none", async () => {
+  const { client } = await connect();
+  expect(client.getInstructions()).not.toContain("Without model");
+  expect(
+    (await client.listTools()).tools.some((tool) =>
+      tool.description?.includes("Without"),
+    ),
+  ).toBe(false);
 });

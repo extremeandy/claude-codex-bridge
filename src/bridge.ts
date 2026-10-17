@@ -15,7 +15,7 @@ export type BridgeEvent = {
   timestamp: string;
 };
 type Question = { requestId: string; params: ToolRequestUserInputParams };
-type TurnSettings = { model?: string; effort?: ReasoningEffort };
+export type TurnSettings = { model?: string; effort?: ReasoningEffort };
 type Session = {
   threadId: string;
   model: string;
@@ -58,6 +58,7 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    private defaults: TurnSettings = {},
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -92,7 +93,7 @@ export class Bridge {
     await this.rpc.connect();
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
-      model: input.model,
+      model: input.model ?? this.defaults.model,
       serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
@@ -101,7 +102,10 @@ export class Bridge {
     const session = this.attach(result.thread.id, result.model, result.cwd);
     return this.lock(session, async () => {
       try {
-        await this.begin(session, input.prompt, { effort: input.effort });
+        // thread/start has no effort field; Codex keeps the first turn's effort for the thread.
+        await this.begin(session, input.prompt, {
+          effort: input.effort ?? this.defaults.effort,
+        });
       } catch (error) {
         // The thread exists and stays attached, so the caller needs its id to retry or resume.
         throw new Error(
@@ -117,6 +121,7 @@ export class Bridge {
     if (this.sessions.has(threadId))
       return this.snapshot(this.session(threadId));
     await this.rpc.connect();
+    // No bridge defaults here: a resumed thread keeps its own last model and effort.
     const result = await this.rpc.call("thread/resume", {
       threadId,
       approvalPolicy: "never",
