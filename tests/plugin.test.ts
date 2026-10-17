@@ -7,8 +7,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { expect, test } from "vitest";
+import { parse } from "yaml";
 import { z } from "zod";
+import { createServer } from "../src/server.ts";
 
 test("npm archive installs offline and its executable emits live events outside the source tree", async () => {
   const directory = await mkdtemp(join(tmpdir(), "claude-codex-plugin-"));
@@ -139,4 +142,47 @@ test("npm package contains only the bundled executable and user documentation", 
   );
   expect(marketplace.plugins[0].source).toBe("./plugins/claude-codex-bridge");
   expect(marketplace.plugins[0].version).toBe(packed.version);
+});
+
+test("plugin ships the opt-in Codex relay output style", async () => {
+  const root = resolve(import.meta.dirname, "..");
+  const plugin = resolve(root, "plugins/claude-codex-bridge");
+  const style = readFileSync(
+    resolve(plugin, "output-styles/codex-relay.md"),
+    "utf8",
+  );
+  const [, frontmatter, body] =
+    style.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/) ?? [];
+  // Exact fields: force-for-plugin stays unset so users opt in, and the
+  // relay leaves coding to Codex.
+  expect(parse(frontmatter)).toEqual({
+    name: "codex-relay",
+    description: expect.any(String),
+    "keep-coding-instructions": false,
+  });
+  const manifest = JSON.parse(
+    readFileSync(resolve(plugin, ".claude-plugin/plugin.json"), "utf8"),
+  );
+  // A manifest outputStyles key would replace the output-styles/ folder scan.
+  expect(manifest.outputStyles).toBeUndefined();
+  expect(readFileSync(resolve(root, "README.md"), "utf8")).toContain(
+    `"outputStyle": "${manifest.name}:codex-relay"`,
+  );
+
+  const { server, bridge } = createServer();
+  const client = new Client({ name: "style-test", version: "1" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const tools = (await client.listTools()).tools.map((tool) => tool.name);
+    const named = new Set(body.match(/\bcodex_\w+/g));
+    expect(named.size).toBeGreaterThan(0);
+    for (const name of named) expect(tools).toContain(name);
+  } finally {
+    await client.close();
+    await server.close();
+    await bridge.close();
+  }
 });
