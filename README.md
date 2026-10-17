@@ -153,6 +153,16 @@ Claude can list available models with `codex_models`. An explicitly selected
 model is requested without provider fallback. Ask for a service tier such as
 `fast` to override the `service_tier` in your Codex config for that thread.
 
+Ask for a reasoning effort such as `high` when starting a task, or for a
+different model or effort when sending the next message:
+
+> Continue that Codex session with model gpt-5.6-luna and high effort: implement
+> the proposed fix.
+
+A new model or effort stays the thread's default for later turns. Codex cannot
+change either for a turn in progress, so the bridge refuses them while a turn
+is running.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |

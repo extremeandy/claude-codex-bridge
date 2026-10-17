@@ -18,18 +18,24 @@ const definitions = {
   },
   codex_start: {
     description:
-      'Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model and serviceTier (for example "fast") are optional.',
+      'Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model, serviceTier (for example "fast") and reasoning effort (for example "high") are optional.',
     schema: z.object({
       prompt: text,
       cwd: id,
       model: id.optional(),
       serviceTier: id.optional(),
+      effort: id.optional(),
     }),
   },
   codex_message: {
     description:
-      "Send direction to a running Codex turn, or start another turn in the same thread if it is idle. A race with turn completion can return an error: inspect status before retrying.",
-    schema: z.object({ threadId: id, message: text }),
+      "Send direction to a running Codex turn, or start another turn in the same thread if it is idle. model and reasoning effort are optional, apply only when the message starts a new turn, and stay the thread's defaults for later turns; passing either while a turn is running returns an error instead of steering. A race with turn completion can return an error: inspect status before retrying.",
+    schema: z.object({
+      threadId: id,
+      message: text,
+      model: id.optional(),
+      effort: id.optional(),
+    }),
   },
   codex_stop: {
     description:
@@ -115,7 +121,10 @@ export function createServer(rpc = new AppServer(), progressMs = 1_000) {
           break;
         case "codex_message": {
           const input = definitions.codex_message.schema.parse(args);
-          result = await bridge.message(input.threadId, input.message);
+          result = await bridge.message(input.threadId, input.message, {
+            model: input.model,
+            effort: input.effort,
+          });
           break;
         }
         case "codex_stop":
