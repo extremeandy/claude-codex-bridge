@@ -2,14 +2,19 @@
 import type { Readable, Writable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AppServer } from "./app-server.ts";
-import { createServer } from "./server.ts";
+import { createServer, sandboxFromEnv } from "./server.ts";
 
 export async function main(
   input: Readable = process.stdin,
   output: Writable = process.stdout,
   rpc = new AppServer(),
+  env: NodeJS.ProcessEnv = process.env,
 ) {
-  const { server, bridge } = createServer(rpc);
+  const { server, bridge } = createServer(
+    rpc,
+    undefined,
+    sandboxFromEnv(env.CODEX_BRIDGE_SANDBOX),
+  );
   let closing: Promise<void> | undefined;
   const shutdown = () => {
     closing ??= (async () => {

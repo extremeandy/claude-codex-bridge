@@ -19,7 +19,7 @@ test("stdio EOF closes the Codex child and shutdown is idempotent", async () => 
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { bridge, shutdown } = await main(input, output, rpc);
+  const { bridge, shutdown } = await main(input, output, rpc, {});
   await bridge.models();
   input.end();
   await sleep(10);
@@ -31,12 +31,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect(defaultSandbox?: SandboxMode) {
+async function connect(sandboxLimit?: SandboxMode) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5, defaultSandbox);
+  const { server, bridge } = createServer(rpc, 5, sandboxLimit);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -70,6 +70,7 @@ async function connect(defaultSandbox?: SandboxMode) {
 
 test("MCP advertises channel capability, typed tools, and nonblocking push events", async () => {
   const { client, call, events } = await connect();
+  expect(client.getInstructions()).toContain("(default danger-full-access)");
   expect(client.getServerCapabilities()?.experimental).toEqual({
     "claude/channel": {},
   });
@@ -151,19 +152,30 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
   ).toBe(true);
 });
 
-test("CODEX_BRIDGE_SANDBOX sets the default sandbox and rejects unknown modes", async () => {
-  expect(sandboxFromEnv(undefined)).toBe("danger-full-access");
-  expect(sandboxFromEnv("")).toBe("danger-full-access");
+test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empty or unknown modes", async () => {
+  expect(sandboxFromEnv(undefined)).toBeUndefined();
   expect(sandboxFromEnv("workspace-write")).toBe("workspace-write");
-  expect(() => sandboxFromEnv("readonly")).toThrow(
-    "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
+  for (const value of ["", "readonly"]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, {
+        CODEX_BRIDGE_SANDBOX: value,
+      }),
+    ).rejects.toThrow(
+      "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
+    );
+  }
+  const { client, call } = await connect("workspace-write");
+  expect(client.getInstructions()).toContain(
+    "(default and maximum workspace-write)",
   );
-  const { client, call } = await connect("read-only");
-  expect(client.getInstructions()).toContain("(default read-only)");
   const tools = (await client.listTools()).tools;
   for (const name of ["codex_start", "codex_resume"])
     expect(tools.find((tool) => tool.name === name)?.description).toContain(
-      "defaults to read-only",
+      "defaults to workspace-write, which is also the widest allowed",
     );
   expect(
     tools.find((tool) => tool.name === "codex_status")?.description,
@@ -171,5 +183,22 @@ test("CODEX_BRIDGE_SANDBOX sets the default sandbox and rejects unknown modes", 
   expect(
     (await call("codex_start", { cwd: process.cwd(), prompt: "sandbox" }))
       .lastAnswer,
+  ).toBe("workspace-write");
+  expect(
+    (
+      await call("codex_start", {
+        cwd: process.cwd(),
+        prompt: "sandbox",
+        sandbox: "read-only",
+      })
+    ).lastAnswer,
   ).toBe("read-only");
+  expect(
+    (
+      await client.callTool({
+        name: "codex_resume",
+        arguments: { threadId: "saved", sandbox: "danger-full-access" },
+      })
+    ).isError,
+  ).toBe(true);
 });

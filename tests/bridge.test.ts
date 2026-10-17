@@ -22,7 +22,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
-  sandbox?: SandboxMode,
+  sandboxLimit?: SandboxMode,
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -37,7 +37,7 @@ function fixture(
       }),
     10,
     limit,
-    sandbox,
+    sandboxLimit,
   );
   cleanup.push(bridge);
   return { bridge, rpc, events };
@@ -257,18 +257,30 @@ test("the sandbox defaults to danger-full-access and an explicit mode reaches Co
   ).rejects.toThrow("already attached with sandbox workspace-write");
 });
 
-test("a configured default sandbox applies to starts and resumes that omit one", async () => {
-  const { bridge } = fixture(undefined, undefined, 200, "read-only");
+test("a sandbox limit is the default for starts and resumes and refuses wider modes", async () => {
+  const { bridge } = fixture(undefined, undefined, 200, "workspace-write");
   const started = await bridge.start({ cwd, prompt: "sandbox" });
-  expect(started.sandbox).toBe("read-only");
-  expect(started.lastAnswer).toBe("read-only");
+  expect(started.sandbox).toBe("workspace-write");
+  expect(started.lastAnswer).toBe("workspace-write");
   expect(
-    (await bridge.start({ cwd, prompt: "sandbox", sandbox: "workspace-write" }))
+    (await bridge.start({ cwd, prompt: "sandbox", sandbox: "read-only" }))
       .lastAnswer,
-  ).toBe("workspace-write");
-  expect((await bridge.resume("saved")).sandbox).toBe("read-only");
+  ).toBe("read-only");
+  await expect(
+    bridge.start({ cwd, prompt: "sandbox", sandbox: "danger-full-access" }),
+  ).rejects.toThrow(
+    "sandbox danger-full-access is wider than workspace-write, the maximum set by CODEX_BRIDGE_SANDBOX",
+  );
+  expect((await bridge.resume("saved")).sandbox).toBe("workspace-write");
   await bridge.message("saved", "sandbox");
-  expect(bridge.status("saved").sessions[0].lastAnswer).toBe("read-only");
+  expect(bridge.status("saved").sessions[0].lastAnswer).toBe("workspace-write");
+  await expect(bridge.resume("other", "danger-full-access")).rejects.toThrow(
+    "wider than workspace-write",
+  );
+  expect(() => bridge.status("other")).toThrow("Unknown thread");
+  expect((await bridge.resume("narrow", "read-only")).sandbox).toBe(
+    "read-only",
+  );
 });
 
 test("bounded journal signals eviction and oversized final answers signal truncation", async () => {

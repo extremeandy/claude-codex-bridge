@@ -14,6 +14,14 @@ export type BridgeEvent = {
   truncated: boolean;
   timestamp: string;
 };
+// Ordered from narrowest to widest. `satisfies` makes tsc reject a SandboxMode
+// that Codex adds until it is ranked here.
+export const sandboxRank = {
+  "read-only": 0,
+  "workspace-write": 1,
+  "danger-full-access": 2,
+} satisfies Record<SandboxMode, number>;
+
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type Session = {
   threadId: string;
@@ -58,7 +66,10 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
-    private defaultSandbox: SandboxMode = "danger-full-access",
+    // The operator's sandbox (CODEX_BRIDGE_SANDBOX) is both the default and
+    // the widest mode a caller may ask for. Without one, the default is
+    // danger-full-access and any mode is allowed.
+    private sandboxLimit?: SandboxMode,
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -90,7 +101,7 @@ export class Bridge {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
-    const sandbox = input.sandbox ?? this.defaultSandbox;
+    const sandbox = this.sandbox(input.sandbox);
     await this.rpc.connect();
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
@@ -112,18 +123,18 @@ export class Bridge {
     });
   }
 
-  async resume(threadId: string, sandbox?: SandboxMode) {
+  async resume(threadId: string, requested?: SandboxMode) {
+    const sandbox = this.sandbox(requested);
     const attached = this.sessions.get(threadId);
     if (attached) {
       // The sandbox is sent only when a thread is attached, so a different
       // mode for an attached thread would otherwise be silently ignored.
-      if (sandbox && sandbox !== attached.sandbox)
+      if (requested && requested !== attached.sandbox)
         throw new Error(
           `Thread is already attached with sandbox ${attached.sandbox}`,
         );
       return this.snapshot(attached);
     }
-    sandbox ??= this.defaultSandbox;
     await this.rpc.connect();
     const result = await this.rpc.call("thread/resume", {
       threadId,
@@ -222,6 +233,15 @@ export class Bridge {
       latestSequence: this.sequence,
       gap: after < oldest - 1,
     };
+  }
+
+  private sandbox(requested?: SandboxMode): SandboxMode {
+    if (!this.sandboxLimit) return requested ?? "danger-full-access";
+    if (requested && sandboxRank[requested] > sandboxRank[this.sandboxLimit])
+      throw new Error(
+        `sandbox ${requested} is wider than ${this.sandboxLimit}, the maximum set by CODEX_BRIDGE_SANDBOX`,
+      );
+    return requested ?? this.sandboxLimit;
   }
 
   private attach(
