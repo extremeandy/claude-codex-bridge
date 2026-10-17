@@ -263,7 +263,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         });
       } else if (
         prompt === "approve_command" ||
-        prompt === "approve_elsewhere"
+        prompt === "approve_elsewhere" ||
+        prompt === "approve_then_crash"
       ) {
         notify("item/started", {
           threadId: params.threadId,
@@ -291,6 +292,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             });
             finish(params.threadId, "completed", "answered elsewhere");
           }, 20);
+        if (prompt === "approve_then_crash")
+          setTimeout(() => process.exit(7), 20);
+      } else if (prompt === "approve_unknown_thread") {
+        // The response comes back under this thread's request ID prefix.
+        send({
+          id: `${params.threadId}:ghost`,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: "ghost",
+            turnId: "ghost-turn",
+            itemId: "cmd",
+            command: "curl https://example.com",
+          },
+        });
       } else if (prompt === "approve_file") {
         notify("item/started", {
           threadId: params.threadId,

@@ -477,6 +477,33 @@ test("interruption clears pending approvals", async () => {
   expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
 });
 
+test("an approval request for a thread the bridge does not know is rejected", async () => {
+  const { bridge, events } = fixture();
+  const { threadId } = await bridge.start({
+    cwd,
+    prompt: "approve_unknown_thread",
+  });
+  expect(await answered(bridge, threadId)).toEqual({
+    code: -32601,
+    message:
+      "Bridge does not support Codex request: item/commandExecution/requestApproval",
+  });
+  expect(events.some((event) => event.kind === "approval")).toBe(false);
+  expect(() => bridge.status("ghost")).toThrow("Unknown thread");
+});
+
+test("an app-server failure clears pending approvals", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId } = await approval(bridge, "approve_then_crash");
+  await until(
+    () => bridge.status(threadId).sessions[0].status === "unavailable",
+  );
+  expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
+  expect(() => bridge.approve(threadId, requestId, "decline")).toThrow(
+    "expired approval",
+  );
+});
+
 test("closing drops pending questions and approvals and refuses later answers", async () => {
   const { bridge } = fixture();
   const { threadId, requestId } = await approval(bridge, "approve_command");
