@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import type { ReasoningEffort } from "../.generated/ReasoningEffort.ts";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
@@ -14,6 +15,7 @@ export type BridgeEvent = {
   timestamp: string;
 };
 type Question = { requestId: string; params: ToolRequestUserInputParams };
+type TurnSettings = { model?: string; effort?: ReasoningEffort };
 type Session = {
   threadId: string;
   model: string;
@@ -82,6 +84,7 @@ export class Bridge {
     cwd: string;
     model?: string;
     serviceTier?: string;
+    effort?: ReasoningEffort;
   }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
@@ -97,7 +100,15 @@ export class Bridge {
     });
     const session = this.attach(result.thread.id, result.model, result.cwd);
     return this.lock(session, async () => {
-      await this.begin(session, input.prompt);
+      try {
+        await this.begin(session, input.prompt, { effort: input.effort });
+      } catch (error) {
+        // The thread exists and stays attached, so the caller needs its id to retry or resume.
+        throw new Error(
+          `Thread ${session.threadId} started, but its first turn failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
       return this.snapshot(session);
     });
   }
@@ -125,10 +136,19 @@ export class Bridge {
     return this.snapshot(session);
   }
 
-  async message(threadId: string, message: string) {
+  async message(
+    threadId: string,
+    message: string,
+    settings: TurnSettings = {},
+  ) {
     const session = this.session(threadId);
     return this.lock(session, async () => {
       if (session.turnId) {
+        // turn/steer accepts no model or effort; refuse rather than drop them.
+        if (settings.model !== undefined || settings.effort !== undefined)
+          throw new Error(
+            "model and effort apply only when a new turn starts, and this thread has a running turn. Send the message without them to steer, or wait for the turn to finish.",
+          );
         await this.rpc.call("turn/steer", {
           threadId,
           expectedTurnId: session.turnId,
@@ -136,7 +156,7 @@ export class Bridge {
         });
         return { mode: "steered", ...this.snapshot(session) };
       }
-      await this.begin(session, message);
+      await this.begin(session, message, settings);
       return { mode: "new_turn", ...this.snapshot(session) };
     });
   }
@@ -242,7 +262,11 @@ export class Bridge {
     }
   }
 
-  private async begin(session: Session, text: string) {
+  private async begin(
+    session: Session,
+    text: string,
+    settings: TurnSettings = {},
+  ) {
     session.lastAnswer = "";
     session.answerTruncated = false;
     try {
@@ -250,7 +274,11 @@ export class Bridge {
       const result = await this.rpc.call("turn/start", {
         threadId: session.threadId,
         input: [{ type: "text", text, text_elements: [] }],
+        model: settings.model,
+        effort: settings.effort,
       });
+      // Codex keeps turn/start overrides as the thread's defaults for later turns.
+      if (settings.model !== undefined) session.model = settings.model;
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;
         session.turnId =
