@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
 import type { AppServer } from "./app-server.ts";
 
@@ -13,11 +14,20 @@ export type BridgeEvent = {
   truncated: boolean;
   timestamp: string;
 };
+// Ordered from narrowest to widest. `satisfies` makes tsc reject a SandboxMode
+// that Codex adds until it is ranked here.
+export const sandboxRank = {
+  "read-only": 0,
+  "workspace-write": 1,
+  "danger-full-access": 2,
+} satisfies Record<SandboxMode, number>;
+
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type Session = {
   threadId: string;
   model: string;
   cwd: string;
+  sandbox: SandboxMode;
   status:
     | "idle"
     | "running"
@@ -56,6 +66,10 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    // The operator's sandbox (CODEX_BRIDGE_SANDBOX) is both the default and
+    // the widest mode a caller may ask for. Without one, the default is
+    // danger-full-access and any mode is allowed.
+    private sandboxLimit?: SandboxMode,
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -82,10 +96,12 @@ export class Bridge {
     cwd: string;
     model?: string;
     serviceTier?: string;
+    sandbox?: SandboxMode;
   }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
+    const sandbox = this.sandbox(input.sandbox);
     await this.rpc.connect();
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
@@ -93,26 +109,45 @@ export class Bridge {
       serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     return this.lock(session, async () => {
       await this.begin(session, input.prompt);
       return this.snapshot(session);
     });
   }
 
-  async resume(threadId: string) {
-    if (this.sessions.has(threadId))
-      return this.snapshot(this.session(threadId));
+  async resume(threadId: string, requested?: SandboxMode) {
+    const sandbox = this.sandbox(requested);
+    const attached = this.sessions.get(threadId);
+    if (attached) {
+      // The sandbox is sent only when a thread is attached, so a different
+      // mode for an attached thread would otherwise be silently ignored.
+      if (requested && requested !== attached.sandbox)
+        throw new Error(
+          `Thread is already attached with sandbox ${attached.sandbox}`,
+        );
+      return this.snapshot(attached);
+    }
     await this.rpc.connect();
     const result = await this.rpc.call("thread/resume", {
       threadId,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
       initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
@@ -200,11 +235,26 @@ export class Bridge {
     };
   }
 
-  private attach(threadId: string, model: string, cwd: string) {
+  private sandbox(requested?: SandboxMode): SandboxMode {
+    if (!this.sandboxLimit) return requested ?? "danger-full-access";
+    if (requested && sandboxRank[requested] > sandboxRank[this.sandboxLimit])
+      throw new Error(
+        `sandbox ${requested} is wider than ${this.sandboxLimit}, the maximum set by CODEX_BRIDGE_SANDBOX`,
+      );
+    return requested ?? this.sandboxLimit;
+  }
+
+  private attach(
+    threadId: string,
+    model: string,
+    cwd: string,
+    sandbox: SandboxMode,
+  ) {
     const session: Session = {
       threadId,
       model,
       cwd,
+      sandbox,
       status: "idle",
       turnId: null,
       lastTurnId: null,

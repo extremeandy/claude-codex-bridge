@@ -5,9 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import { AppServer } from "../src/app-server.ts";
 import { main } from "../src/index.ts";
-import { createServer } from "../src/server.ts";
+import { createServer, sandboxFromEnv } from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -18,7 +19,7 @@ test("stdio EOF closes the Codex child and shutdown is idempotent", async () => 
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { bridge, shutdown } = await main(input, output, rpc);
+  const { bridge, shutdown } = await main(input, output, rpc, {});
   await bridge.models();
   input.end();
   await sleep(10);
@@ -30,12 +31,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect() {
+async function connect(sandboxLimit?: SandboxMode) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5);
+  const { server, bridge } = createServer(rpc, 5, sandboxLimit);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -69,6 +70,7 @@ async function connect() {
 
 test("MCP advertises channel capability, typed tools, and nonblocking push events", async () => {
   const { client, call, events } = await connect();
+  expect(client.getInstructions()).toContain("(default danger-full-access)");
   expect(client.getServerCapabilities()?.experimental).toEqual({
     "claude/channel": {},
   });
@@ -99,6 +101,19 @@ test("MCP advertises channel capability, typed tools, and nonblocking push event
     Array,
   );
   await call("codex_resume", { threadId: "saved" });
+  expect(
+    (await call("codex_resume", { threadId: "readonly", sandbox: "read-only" }))
+      .sandbox,
+  ).toBe("read-only");
+  expect(
+    (
+      await call("codex_start", {
+        cwd: process.cwd(),
+        prompt: "sandbox",
+        sandbox: "workspace-write",
+      })
+    ).lastAnswer,
+  ).toBe("workspace-write");
 });
 
 test("MCP question answer reaches Codex and tool errors use isError", async () => {
@@ -124,6 +139,65 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
       await client.callTool({
         name: "codex_start",
         arguments: { cwd: process.cwd() },
+      })
+    ).isError,
+  ).toBe(true);
+  expect(
+    (
+      await client.callTool({
+        name: "codex_start",
+        arguments: { cwd: process.cwd(), prompt: "work", sandbox: "none" },
+      })
+    ).isError,
+  ).toBe(true);
+});
+
+test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empty or unknown modes", async () => {
+  expect(sandboxFromEnv(undefined)).toBeUndefined();
+  expect(sandboxFromEnv("workspace-write")).toBe("workspace-write");
+  for (const value of ["", "readonly"]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, {
+        CODEX_BRIDGE_SANDBOX: value,
+      }),
+    ).rejects.toThrow(
+      "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
+    );
+  }
+  const { client, call } = await connect("workspace-write");
+  expect(client.getInstructions()).toContain(
+    "(default and maximum workspace-write)",
+  );
+  const tools = (await client.listTools()).tools;
+  for (const name of ["codex_start", "codex_resume"])
+    expect(tools.find((tool) => tool.name === name)?.description).toContain(
+      "defaults to workspace-write, which is also the widest allowed",
+    );
+  expect(
+    tools.find((tool) => tool.name === "codex_status")?.description,
+  ).not.toContain("sandbox");
+  expect(
+    (await call("codex_start", { cwd: process.cwd(), prompt: "sandbox" }))
+      .lastAnswer,
+  ).toBe("workspace-write");
+  expect(
+    (
+      await call("codex_start", {
+        cwd: process.cwd(),
+        prompt: "sandbox",
+        sandbox: "read-only",
+      })
+    ).lastAnswer,
+  ).toBe("read-only");
+  expect(
+    (
+      await client.callTool({
+        name: "codex_resume",
+        arguments: { threadId: "saved", sandbox: "danger-full-access" },
       })
     ).isError,
   ).toBe(true);
