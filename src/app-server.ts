@@ -22,31 +22,32 @@ type Results = {
   "turn/steer": TurnSteerResponse;
   "turn/interrupt": Record<string, never>;
 };
-type Framing = "jsonl" | "websocket";
 type Pending = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
-
-const privateCommand = ["codex", "app-server", "--listen", "stdio://"];
-
-/**
- * Chooses the app-server from CODEX_BRIDGE_APP_SERVER. Unset starts a private
- * app-server that exits with the bridge. "daemon" connects to the shared
- * local daemon (`codex app-server daemon start`), whose turns outlive the
- * bridge.
- */
-export function appServerConfig(env: NodeJS.ProcessEnv = process.env): {
-  command: string[];
-  framing: Framing;
-} {
-  const mode = env.CODEX_BRIDGE_APP_SERVER;
-  if (!mode) return { command: [...privateCommand], framing: "jsonl" };
-  // The proxy pipes bytes to the daemon's control socket, which speaks
+type AppServerConfig = {
+  command?: readonly string[];
+  // The shared daemon (`codex app-server daemon start`) runs turns outside
+  // this process. The bridge reaches it through `codex app-server proxy`,
+  // which pipes bytes to the daemon's control socket; that socket speaks
   // JSON-RPC over WebSocket rather than one JSON message per line.
+  daemon?: boolean;
+  timeoutMs?: number;
+};
+
+const privateCommand = ["codex", "app-server", "--listen", "stdio://"] as const;
+
+// CODEX_BRIDGE_APP_SERVER unset starts a private app-server that exits with
+// the bridge; "daemon" uses the shared daemon, whose turns outlive the bridge.
+export function appServerConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): AppServerConfig {
+  const mode = env.CODEX_BRIDGE_APP_SERVER;
+  if (!mode) return { command: privateCommand, daemon: false };
   if (mode === "daemon")
-    return { command: ["codex", "app-server", "proxy"], framing: "websocket" };
+    return { command: ["codex", "app-server", "proxy"], daemon: true };
   throw new Error(
     `CODEX_BRIDGE_APP_SERVER must be unset or "daemon", not ${JSON.stringify(mode)}`,
   );
@@ -56,57 +57,104 @@ export class AppServer {
   onNotification?: (event: ServerNotification) => void;
   onRequest?: (request: ServerRequest) => void;
   onFailure?: (error: Error) => void;
+  // Runs after every successful initialize, before connect() resolves.
+  onConnect?: () => Promise<void>;
+  private command: readonly string[];
+  private daemon: boolean;
+  private timeoutMs: number;
   private child?: ChildProcessWithoutNullStreams;
-  private socket?: WebSocket;
+  private send?: (text: string) => void;
   private ready?: Promise<void>;
   private failure?: Error;
   private pending = new Map<number, Pending>();
   private sequence = 0;
   private stopping = false;
 
-  constructor(
-    private command = privateCommand,
-    private timeoutMs = 30_000,
-    private framing: Framing = "jsonl",
-  ) {}
+  constructor({
+    command = privateCommand,
+    daemon = false,
+    timeoutMs = 30_000,
+  }: AppServerConfig = {}) {
+    this.command = command;
+    this.daemon = daemon;
+    this.timeoutMs = timeoutMs;
+  }
 
   connect(): Promise<void> {
+    // The daemon's turns outlive a dropped connection, so each call after a
+    // failure tries one fresh connection. A private app-server's turns die
+    // with it, so its failure is final.
+    if (this.failure && this.daemon && !this.stopping) {
+      this.child?.kill();
+      this.child = undefined;
+      this.send = undefined;
+      this.failure = undefined;
+      this.ready = undefined;
+    }
     this.ready ??= this.initialize();
     return this.ready;
   }
 
   private async initialize() {
     const [command, ...args] = this.command;
-    this.child = spawn(command, args, { stdio: "pipe" });
-    this.child.stderr.pipe(process.stderr, { end: false });
-    this.child.on("error", (error) => this.fail(error));
-    this.child.stdin.on("error", (error) => this.fail(error));
-    this.child.on("exit", (code, signal) =>
-      this.fail(new Error(`Codex app-server exited: ${code ?? signal}`)),
+    const child = spawn(command, args, { stdio: "pipe" });
+    this.child = child;
+    // Events from a replaced connection must not touch the current one.
+    const fail = (error: Error) => {
+      if (this.child === child) this.fail(error);
+    };
+    const receive = (text: string) => {
+      if (this.child === child) this.receive(text);
+    };
+    child.stderr.pipe(process.stderr, { end: false });
+    child.on("error", fail);
+    child.stdin.on("error", fail);
+    child.on("exit", (code, signal) =>
+      fail(new Error(`Codex app-server exited: ${code ?? signal}`)),
     );
-    if (this.framing === "websocket") {
-      const { stdout, stdin } = this.child;
+    try {
+      await this.handshake(child, fail, receive);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+    // A failure during the handshake can let a later connect() replace this
+    // connection before the handshake returns.
+    if (this.child !== child)
+      throw new Error("Codex app-server connection closed");
+    if (this.failure) throw this.failure;
+  }
+
+  private async handshake(
+    child: ChildProcessWithoutNullStreams,
+    fail: (error: Error) => void,
+    receive: (text: string) => void,
+  ) {
+    if (this.daemon) {
+      // Node's built-in WebSocket cannot run over an arbitrary duplex such as
+      // the proxy's stdio; `ws` accepts createConnection.
       const socket = new WebSocket("ws://localhost/", {
         createConnection: () =>
-          Duplex.from({ readable: stdout, writable: stdin }),
+          Duplex.from({ readable: child.stdout, writable: child.stdin }),
         handshakeTimeout: this.timeoutMs,
         perMessageDeflate: false,
       });
-      this.socket = socket;
-      socket.on("message", (data) => this.receive(String(data)));
+      socket.on("message", (data) => receive(String(data)));
+      socket.on("error", fail);
       socket.on("close", () =>
-        this.fail(new Error("Codex app-server connection closed")),
+        fail(new Error("Codex app-server connection closed")),
       );
       await new Promise<void>((resolve, reject) => {
         socket.once("open", resolve);
-        socket.on("error", (error) => {
-          this.fail(error);
-          reject(error);
-        });
+        socket.once("error", reject);
+        socket.once("close", () =>
+          reject(new Error("Codex app-server connection closed")),
+        );
       });
+      this.send = (text) => socket.send(text);
     } else {
-      const lines = createInterface({ input: this.child.stdout });
-      lines.on("line", (line) => this.receive(line));
+      createInterface({ input: child.stdout }).on("line", receive);
+      this.send = (text) => child.stdin.write(`${text}\n`);
     }
     await this.call("initialize", {
       clientInfo: {
@@ -117,6 +165,7 @@ export class AppServer {
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     this.write({ method: "initialized" });
+    await this.onConnect?.();
   }
 
   call<M extends keyof Results>(
@@ -154,9 +203,8 @@ export class AppServer {
 
   private write(message: unknown) {
     if (this.failure) throw this.failure;
-    if (!this.child) throw new Error("Codex app-server is not connected");
-    if (this.socket) this.socket.send(JSON.stringify(message));
-    else this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    if (!this.send) throw new Error("Codex app-server is not connected");
+    this.send(JSON.stringify(message));
   }
 
   private receive(line: string) {
