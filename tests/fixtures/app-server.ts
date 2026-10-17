@@ -11,9 +11,21 @@ const threads = new Map<
     turnId: string;
     prompt: string;
     sandbox: string;
+    approvalPolicy: string;
+    approvalsReviewer?: string;
   }
 >();
 const sandboxes = ["read-only", "workspace-write", "danger-full-access"];
+const policies = ["untrusted", "on-request", "never"];
+const reviewers = [undefined, "user", "auto_review"];
+const permitted = (params: {
+  sandbox: string;
+  approvalPolicy: string;
+  approvalsReviewer?: string;
+}) =>
+  sandboxes.includes(params.sandbox) &&
+  policies.includes(params.approvalPolicy) &&
+  reviewers.includes(params.approvalsReviewer);
 let sequence = 0;
 const send = (message: object) =>
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -75,11 +87,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id, error: { code: -1, message: "service tier unavailable" } });
         break;
       }
-      if (
-        params.approvalPolicy !== "never" ||
-        !sandboxes.includes(params.sandbox) ||
-        params.allowProviderModelFallback !== false
-      )
+      if (!permitted(params) || params.allowProviderModelFallback !== false)
         throw new Error("Wrong permissions or model fallback");
       const threadId = `thread-${++sequence}`;
       const thread = {
@@ -90,6 +98,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         turnId: "",
         prompt: "",
         sandbox: params.sandbox,
+        approvalPolicy: params.approvalPolicy,
+        approvalsReviewer: params.approvalsReviewer,
       };
       threads.set(threadId, thread);
       notify("thread/started", { thread: { id: threadId } });
@@ -99,17 +109,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/resume": {
       if (params.initialTurnsPage?.itemsView !== "full")
         throw new Error("Resume needs full recent items");
-      if (
-        params.approvalPolicy !== "never" ||
-        !sandboxes.includes(params.sandbox)
-      )
-        throw new Error("Wrong permissions");
+      if (!permitted(params)) throw new Error("Wrong permissions");
       const thread = {
         model: "fixture",
         cwd: process.cwd(),
         turnId: params.threadId === "active" ? "resumed-turn" : "",
         prompt: "",
         sandbox: params.sandbox,
+        approvalPolicy: params.approvalPolicy,
+        approvalsReviewer: params.approvalsReviewer,
       };
       threads.set(params.threadId, thread);
       reply({
@@ -196,6 +204,38 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         );
       if (prompt === "sandbox")
         finish(params.threadId, "completed", thread.sandbox);
+      if (prompt === "thread_settings")
+        finish(
+          params.threadId,
+          "completed",
+          JSON.stringify({
+            sandbox: thread.sandbox,
+            approvalPolicy: thread.approvalPolicy,
+            approvalsReviewer: thread.approvalsReviewer ?? "absent",
+          }),
+        );
+      if (prompt === "auto_review") {
+        notify("item/autoApprovalReview/completed", {
+          threadId: params.threadId,
+          turnId: thread.turnId,
+          reviewId: "review",
+          targetItemId: "cmd",
+          decisionSource: "agent",
+          review: {
+            status: "denied",
+            riskLevel: "high",
+            userAuthorization: "low",
+            rationale: "Sends data to an unknown host",
+          },
+          action: {
+            type: "command",
+            source: "shell",
+            command: "curl",
+            cwd: "/",
+          },
+        });
+        finish(params.threadId);
+      }
       if (prompt === "failed") {
         notify("error", {
           threadId: params.threadId,
@@ -237,11 +277,109 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       } else if (prompt === "unsupported") {
         send({
           id: `${params.threadId}:unsupported`,
-          method: "item/permissions/requestApproval",
+          method: "mcpServer/elicitation/request",
           params: { threadId: params.threadId },
         });
       } else if (
-        !["instant", "settings", "sandbox", "failed", "long"].includes(prompt)
+        prompt === "approve_command" ||
+        prompt === "approve_elsewhere" ||
+        prompt === "approve_then_crash"
+      ) {
+        notify("item/started", {
+          threadId: params.threadId,
+          item: { type: "commandExecution", id: "cmd", command: "curl" },
+        });
+        const requestId = `${params.threadId}:command`;
+        send({
+          id: requestId,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            kind: "command",
+            threadId: params.threadId,
+            turnId: thread.turnId,
+            itemId: "cmd",
+            reason: "Needs network access",
+            command: "curl https://example.com",
+            availableDecisions: ["accept", "cancel"],
+          },
+        });
+        if (prompt === "approve_elsewhere")
+          setTimeout(() => {
+            notify("serverRequest/resolved", {
+              threadId: params.threadId,
+              requestId,
+            });
+            finish(params.threadId, "completed", "answered elsewhere");
+          }, 20);
+        if (prompt === "approve_then_crash")
+          setTimeout(() => process.exit(7), 20);
+      } else if (prompt === "approve_unknown_thread") {
+        // The response comes back under this thread's request ID prefix.
+        send({
+          id: `${params.threadId}:ghost`,
+          method: "item/commandExecution/requestApproval",
+          params: {
+            threadId: "ghost",
+            turnId: "ghost-turn",
+            itemId: "cmd",
+            command: "curl https://example.com",
+          },
+        });
+      } else if (
+        prompt === "approve_file" ||
+        prompt === "approve_file_unstarted"
+      ) {
+        if (prompt === "approve_file")
+          notify("item/started", {
+            threadId: params.threadId,
+            turnId: thread.turnId,
+            item: {
+              type: "fileChange",
+              id: "patch",
+              changes: [{ path: "a.txt", kind: { type: "add" }, diff: "+a" }],
+              status: "inProgress",
+            },
+          });
+        notify("item/fileChange/patchUpdated", {
+          threadId: params.threadId,
+          turnId: thread.turnId,
+          itemId: "patch",
+          changes: [{ path: "a.txt", kind: { type: "add" }, diff: "+b" }],
+        });
+        send({
+          id: `${params.threadId}:file`,
+          method: "item/fileChange/requestApproval",
+          params: {
+            threadId: params.threadId,
+            turnId: thread.turnId,
+            itemId: "patch",
+            reason: null,
+          },
+        });
+      } else if (prompt === "approve_permissions") {
+        send({
+          id: `${params.threadId}:permissions`,
+          method: "item/permissions/requestApproval",
+          params: {
+            threadId: params.threadId,
+            turnId: thread.turnId,
+            itemId: "permissions",
+            environmentId: "local",
+            cwd: process.cwd(),
+            reason: "Fetch dependencies",
+            permissions: { network: { enabled: true }, fileSystem: null },
+          },
+        });
+      } else if (
+        ![
+          "instant",
+          "sandbox",
+          "settings",
+          "thread_settings",
+          "auto_review",
+          "failed",
+          "long",
+        ].includes(prompt)
       ) {
         setTimeout(() => {
           notify("item/started", {
