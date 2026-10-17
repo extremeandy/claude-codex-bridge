@@ -209,6 +209,18 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
 
 test("approval env defaults are validated and unset keeps never with no reviewer", async () => {
   expect(settingsFromEnv({})).toEqual({});
+  for (const [name, options] of [
+    ["CODEX_BRIDGE_APPROVAL_POLICY", "untrusted, on-request, never"],
+    ["CODEX_BRIDGE_APPROVALS_REVIEWER", "user, auto_review"],
+  ]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, { [name]: "" }),
+    ).rejects.toThrow(`${name} must be one of ${options}; got ""`);
+  }
   expect(
     settingsFromEnv({
       CODEX_BRIDGE_APPROVAL_POLICY: "on-request",
