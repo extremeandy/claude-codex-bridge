@@ -5,10 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
-import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import { AppServer } from "../src/app-server.ts";
+import type { SettingsInput } from "../src/bridge.ts";
 import { main } from "../src/index.ts";
-import { createServer, sandboxFromEnv } from "../src/server.ts";
+import { createServer, settingsFromEnv } from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -31,12 +31,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect(sandboxLimit?: SandboxMode) {
+async function connect(configured: SettingsInput = {}) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5, sandboxLimit);
+  const { server, bridge } = createServer(rpc, 5, configured);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -70,7 +70,9 @@ async function connect(sandboxLimit?: SandboxMode) {
 
 test("MCP advertises channel capability, typed tools, and nonblocking push events", async () => {
   const { client, call, events } = await connect();
-  expect(client.getInstructions()).toContain("(default danger-full-access)");
+  expect(client.getInstructions()).toContain(
+    "(sandbox default danger-full-access;",
+  );
   expect(client.getServerCapabilities()?.experimental).toEqual({
     "claude/channel": {},
   });
@@ -153,8 +155,10 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
 });
 
 test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empty or unknown modes", async () => {
-  expect(sandboxFromEnv(undefined)).toBeUndefined();
-  expect(sandboxFromEnv("workspace-write")).toBe("workspace-write");
+  expect(settingsFromEnv({}).sandbox).toBeUndefined();
+  expect(
+    settingsFromEnv({ CODEX_BRIDGE_SANDBOX: "workspace-write" }).sandbox,
+  ).toBe("workspace-write");
   for (const value of ["", "readonly"]) {
     const rpc = new AppServer([
       process.execPath,
@@ -168,9 +172,9 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
       "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
     );
   }
-  const { client, call } = await connect("workspace-write");
+  const { client, call } = await connect({ sandbox: "workspace-write" });
   expect(client.getInstructions()).toContain(
-    "(default and maximum workspace-write)",
+    "(sandbox default and maximum workspace-write;",
   );
   const tools = (await client.listTools()).tools;
   for (const name of ["codex_start", "codex_resume"])
@@ -198,6 +202,97 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
       await client.callTool({
         name: "codex_resume",
         arguments: { threadId: "saved", sandbox: "danger-full-access" },
+      })
+    ).isError,
+  ).toBe(true);
+});
+
+test("approval env defaults are validated and unset keeps never with no reviewer", async () => {
+  expect(settingsFromEnv({})).toEqual({});
+  for (const [name, options] of [
+    ["CODEX_BRIDGE_APPROVAL_POLICY", "untrusted, on-request, never"],
+    ["CODEX_BRIDGE_APPROVALS_REVIEWER", "user, auto_review"],
+  ]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, { [name]: "" }),
+    ).rejects.toThrow(`${name} must be one of ${options}; got ""`);
+  }
+  expect(
+    settingsFromEnv({
+      CODEX_BRIDGE_APPROVAL_POLICY: "on-request",
+      CODEX_BRIDGE_APPROVALS_REVIEWER: "auto_review",
+    }),
+  ).toMatchObject({
+    approvalPolicy: "on-request",
+    approvalsReviewer: "auto_review",
+  });
+  expect(() =>
+    settingsFromEnv({ CODEX_BRIDGE_APPROVAL_POLICY: "on-failure" }),
+  ).toThrow(
+    "CODEX_BRIDGE_APPROVAL_POLICY must be one of untrusted, on-request, never",
+  );
+  expect(() =>
+    settingsFromEnv({ CODEX_BRIDGE_APPROVALS_REVIEWER: "guardian_subagent" }),
+  ).toThrow("CODEX_BRIDGE_APPROVALS_REVIEWER must be one of user, auto_review");
+  const { client } = await connect({
+    approvalPolicy: "untrusted",
+    approvalsReviewer: "user",
+  });
+  expect(client.getInstructions()).toContain(
+    "(sandbox default danger-full-access; approvalPolicy default untrusted; approvalsReviewer default user)",
+  );
+});
+
+test("MCP approval requests surface as events and codex_approve answers them", async () => {
+  const { call, events, client } = await connect();
+  expect(client.getInstructions()).toContain(
+    "call codex_approve only with the decision the user explicitly gave",
+  );
+  expect(client.getInstructions()).toContain(
+    "can still let a single command run outside the sandbox",
+  );
+  const approve = (await client.listTools()).tools.find(
+    (tool) => tool.name === "codex_approve",
+  );
+  expect(approve?.description).toContain("Never decide on your own judgment");
+  expect(approve?.description).toContain(
+    "cannot send Codex's acceptWithExecpolicyAmendment or applyNetworkPolicyAmendment",
+  );
+  const session = await call("codex_start", {
+    cwd: process.cwd(),
+    prompt: "approve_command",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+  });
+  await sleep(15);
+  const approvalEvent = events.find((event) => event.meta.kind === "approval");
+  const request = JSON.parse(approvalEvent?.content ?? "{}");
+  expect(request.command).toBe("curl https://example.com");
+  expect(
+    (await call("codex_status", { threadId: session.threadId })).sessions,
+  ).toMatchObject([{ status: "waiting_approval" }]);
+  await call("codex_approve", {
+    threadId: session.threadId,
+    requestId: request.requestId,
+    decision: "decline",
+  });
+  await sleep(10);
+  expect(
+    events.some((event) => event.content === '{"decision":"decline"}'),
+  ).toBe(true);
+  expect(
+    (
+      await client.callTool({
+        name: "codex_approve",
+        arguments: {
+          threadId: session.threadId,
+          requestId: request.requestId,
+          decision: "yes",
+        },
       })
     ).isError,
   ).toBe(true);

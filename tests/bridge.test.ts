@@ -1,9 +1,8 @@
 import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
-import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import { AppServer } from "../src/app-server.ts";
-import { Bridge, type BridgeEvent } from "../src/bridge.ts";
+import { Bridge, type BridgeEvent, type SettingsInput } from "../src/bridge.ts";
 
 const cleanup: Bridge[] = [];
 const command = [
@@ -22,7 +21,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
-  sandboxLimit?: SandboxMode,
+  configured: SettingsInput = {},
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -37,7 +36,7 @@ function fixture(
       }),
     10,
     limit,
-    sandboxLimit,
+    configured,
   );
   cleanup.push(bridge);
   return { bridge, rpc, events };
@@ -241,24 +240,26 @@ test("the sandbox defaults to danger-full-access and an explicit mode reaches Co
   expect(readOnly.sandbox).toBe("read-only");
   expect(readOnly.lastAnswer).toBe("read-only");
   expect((await bridge.resume("saved")).sandbox).toBe("danger-full-access");
-  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
-    "workspace-write",
-  );
+  expect(
+    (await bridge.resume("workspace", { sandbox: "workspace-write" })).sandbox,
+  ).toBe("workspace-write");
   await bridge.message("workspace", "sandbox");
   expect(bridge.status("workspace").sessions[0].lastAnswer).toBe(
     "workspace-write",
   );
   expect((await bridge.resume("workspace")).sandbox).toBe("workspace-write");
-  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
-    "workspace-write",
-  );
+  expect(
+    (await bridge.resume("workspace", { sandbox: "workspace-write" })).sandbox,
+  ).toBe("workspace-write");
   await expect(
-    bridge.resume("workspace", "danger-full-access"),
+    bridge.resume("workspace", { sandbox: "danger-full-access" }),
   ).rejects.toThrow("already attached with sandbox workspace-write");
 });
 
 test("a sandbox limit is the default for starts and resumes and refuses wider modes", async () => {
-  const { bridge } = fixture(undefined, undefined, 200, "workspace-write");
+  const { bridge } = fixture(undefined, undefined, 200, {
+    sandbox: "workspace-write",
+  });
   const started = await bridge.start({ cwd, prompt: "sandbox" });
   expect(started.sandbox).toBe("workspace-write");
   expect(started.lastAnswer).toBe("workspace-write");
@@ -274,13 +275,276 @@ test("a sandbox limit is the default for starts and resumes and refuses wider mo
   expect((await bridge.resume("saved")).sandbox).toBe("workspace-write");
   await bridge.message("saved", "sandbox");
   expect(bridge.status("saved").sessions[0].lastAnswer).toBe("workspace-write");
-  await expect(bridge.resume("other", "danger-full-access")).rejects.toThrow(
-    "wider than workspace-write",
-  );
+  await expect(
+    bridge.resume("other", { sandbox: "danger-full-access" }),
+  ).rejects.toThrow("wider than workspace-write");
   expect(() => bridge.status("other")).toThrow("Unknown thread");
-  expect((await bridge.resume("narrow", "read-only")).sandbox).toBe(
-    "read-only",
+  expect(
+    (await bridge.resume("narrow", { sandbox: "read-only" })).sandbox,
+  ).toBe("read-only");
+});
+
+test("approval settings default to never with no reviewer and explicit values reach Codex on start and resume", async () => {
+  const { bridge } = fixture();
+  const settings = async (threadId: string) => {
+    await until(() =>
+      ["completed", "idle"].includes(
+        bridge.status(threadId).sessions[0].status,
+      ),
+    );
+    return JSON.parse(bridge.status(threadId).sessions[0].lastAnswer);
+  };
+  const plain = await bridge.start({ cwd, prompt: "settings" });
+  expect(plain).toMatchObject({
+    approvalPolicy: "never",
+    approvalsReviewer: null,
+  });
+  expect(await settings(plain.threadId)).toEqual({
+    sandbox: "danger-full-access",
+    approvalPolicy: "never",
+    approvalsReviewer: "absent",
+  });
+  const asking = await bridge.start({
+    cwd,
+    prompt: "settings",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "auto_review",
+  });
+  expect(await settings(asking.threadId)).toMatchObject({
+    approvalPolicy: "on-request",
+    approvalsReviewer: "auto_review",
+  });
+  expect(
+    await bridge.resume("strict", {
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+    }),
+  ).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
+  await bridge.message("strict", "settings");
+  expect(await settings("strict")).toMatchObject({
+    approvalPolicy: "untrusted",
+    approvalsReviewer: "user",
+  });
+  expect(
+    (await bridge.resume("strict", { approvalPolicy: "untrusted" }))
+      .approvalPolicy,
+  ).toBe("untrusted");
+  await expect(
+    bridge.resume("strict", { approvalPolicy: "never" }),
+  ).rejects.toThrow("already attached with approvalPolicy untrusted");
+  await expect(
+    bridge.resume("strict", { approvalsReviewer: "auto_review" }),
+  ).rejects.toThrow("already attached with approvalsReviewer user");
+  await bridge.resume("saved");
+  await expect(
+    bridge.resume("saved", { approvalsReviewer: "user" }),
+  ).rejects.toThrow("already attached with approvalsReviewer unset");
+});
+
+test("configured approval defaults apply to starts and resumes that omit them", async () => {
+  const { bridge } = fixture(undefined, undefined, 200, {
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+  });
+  const started = await bridge.start({ cwd, prompt: "settings" });
+  await until(
+    () => bridge.status(started.threadId).sessions[0].status === "completed",
   );
+  expect(
+    JSON.parse(bridge.status(started.threadId).sessions[0].lastAnswer),
+  ).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "user" });
+  expect(await bridge.resume("saved")).toMatchObject({
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+  });
+});
+
+async function approval(bridge: Bridge, prompt: string) {
+  const session = await bridge.start({
+    cwd,
+    prompt,
+    approvalPolicy: "on-request",
+  });
+  await until(
+    () => bridge.status(session.threadId).sessions[0].approvals.length > 0,
+  );
+  const status = bridge.status(session.threadId).sessions[0];
+  return { threadId: session.threadId, status, ...status.approvals[0] };
+}
+
+async function answered(bridge: Bridge, threadId: string) {
+  await until(() => bridge.status(threadId).sessions[0].status === "completed");
+  return JSON.parse(bridge.status(threadId).sessions[0].lastAnswer);
+}
+
+test("a command approval surfaces as an event, waits, and codex_approve sends the decision", async () => {
+  const { bridge, events } = fixture();
+  const { threadId, requestId, status } = await approval(
+    bridge,
+    "approve_command",
+  );
+  expect(status.status).toBe("waiting_approval");
+  const event = events.find((event) => event.kind === "approval");
+  expect(JSON.parse(event?.text ?? "{}")).toMatchObject({
+    requestId,
+    method: "item/commandExecution/requestApproval",
+    command: "curl https://example.com",
+    reason: "Needs network access",
+  });
+  expect(() => bridge.answer(threadId, requestId, { choice: ["A"] })).toThrow(
+    "expired question",
+  );
+  expect(() => bridge.approve("other", requestId, "accept")).toThrow(
+    "expired approval",
+  );
+  expect(() => bridge.approve(threadId, requestId, "acceptForSession")).toThrow(
+    "does not offer acceptForSession for this request; it offers accept, cancel",
+  );
+  bridge.approve(threadId, requestId, "accept");
+  expect(bridge.status(threadId).sessions[0]).toMatchObject({
+    status: "running",
+    approvals: [],
+  });
+  expect(() => bridge.approve(threadId, requestId, "accept")).toThrow(
+    "expired approval",
+  );
+  expect(await answered(bridge, threadId)).toEqual({ decision: "accept" });
+});
+
+test("refusals are sent even when Codex does not list them", async () => {
+  const { bridge } = fixture();
+  for (const decision of ["decline", "cancel"] as const) {
+    const { threadId, requestId } = await approval(bridge, "approve_command");
+    bridge.approve(threadId, requestId, decision);
+    expect(await answered(bridge, threadId)).toEqual({ decision });
+  }
+});
+
+test("a file change approval carries the latest proposed diff", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId, changes } = await approval(
+    bridge,
+    "approve_file",
+  );
+  expect(changes).toEqual([
+    { path: "a.txt", kind: { type: "add" }, diff: "+b" },
+  ]);
+  bridge.approve(threadId, requestId, "acceptForSession");
+  expect(await answered(bridge, threadId)).toEqual({
+    decision: "acceptForSession",
+  });
+  // The fixture completed that turn without completing the file change item,
+  // so a later request for the same item ID has no diff to show.
+  const later = await approval(bridge, "approve_file_unstarted");
+  expect(later.changes).toBeUndefined();
+});
+
+test("a permissions approval grants the requested profile or nothing", async () => {
+  const { bridge } = fixture();
+  let request = await approval(bridge, "approve_permissions");
+  expect(() =>
+    bridge.approve(request.threadId, request.requestId, "cancel"),
+  ).toThrow("accept, acceptForSession or decline");
+  bridge.approve(request.threadId, request.requestId, "acceptForSession");
+  expect(await answered(bridge, request.threadId)).toEqual({
+    permissions: { network: { enabled: true } },
+    scope: "session",
+  });
+  request = await approval(bridge, "approve_permissions");
+  bridge.approve(request.threadId, request.requestId, "decline");
+  expect(await answered(bridge, request.threadId)).toEqual({
+    permissions: {},
+    scope: "turn",
+  });
+});
+
+test("an approval answered by another client clears without a response", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId } = await approval(bridge, "approve_elsewhere");
+  await until(
+    () =>
+      bridge.status(threadId).sessions[0].lastAnswer === "answered elsewhere",
+  );
+  expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
+  expect(() => bridge.approve(threadId, requestId, "accept")).toThrow(
+    "expired approval",
+  );
+});
+
+test("interruption clears pending approvals", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await approval(bridge, "approve_command");
+  await bridge.stop(threadId);
+  await until(
+    () => bridge.status(threadId).sessions[0].status === "interrupted",
+  );
+  expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
+});
+
+test("an approval request for a thread the bridge does not know is rejected", async () => {
+  const { bridge, events } = fixture();
+  const { threadId } = await bridge.start({
+    cwd,
+    prompt: "approve_unknown_thread",
+  });
+  expect(await answered(bridge, threadId)).toEqual({
+    code: -32601,
+    message:
+      "Bridge does not support Codex request: item/commandExecution/requestApproval",
+  });
+  expect(events.some((event) => event.kind === "approval")).toBe(false);
+  expect(() => bridge.status("ghost")).toThrow("Unknown thread");
+});
+
+test("an app-server failure clears pending approvals", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId } = await approval(bridge, "approve_then_crash");
+  await until(
+    () => bridge.status(threadId).sessions[0].status === "unavailable",
+  );
+  expect(bridge.status(threadId).sessions[0].approvals).toEqual([]);
+  expect(() => bridge.approve(threadId, requestId, "decline")).toThrow(
+    "expired approval",
+  );
+});
+
+test("closing drops pending questions and approvals and refuses later answers", async () => {
+  const { bridge } = fixture();
+  const { threadId, requestId } = await approval(bridge, "approve_command");
+  const asked = await bridge.start({ cwd, prompt: "question" });
+  await until(
+    () => bridge.status(asked.threadId).sessions[0].questions.length > 0,
+  );
+  const question = bridge.status(asked.threadId).sessions[0].questions[0];
+  await bridge.close();
+  expect(bridge.status()).toMatchObject({
+    failure: "Bridge closed",
+    sessions: [
+      { status: "unavailable", approvals: [], questions: [] },
+      { status: "unavailable", approvals: [], questions: [] },
+    ],
+  });
+  expect(() => bridge.approve(threadId, requestId, "decline")).toThrow(
+    "Bridge closed",
+  );
+  expect(() =>
+    bridge.answer(asked.threadId, question.requestId, { choice: ["A"] }),
+  ).toThrow("Bridge closed");
+});
+
+test("auto-review decisions surface as events", async () => {
+  const { bridge, events } = fixture();
+  await bridge.start({ cwd, prompt: "auto_review" });
+  await until(() => events.some((event) => event.kind === "auto_review"));
+  expect(
+    JSON.parse(
+      events.find((event) => event.kind === "auto_review")?.text ?? "",
+    ),
+  ).toMatchObject({
+    status: "denied",
+    rationale: "Sends data to an unknown host",
+    action: { type: "command", command: "curl" },
+  });
 });
 
 test("bounded journal signals eviction and oversized final answers signal truncation", async () => {
