@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -58,7 +58,7 @@ const definitions = {
   },
   codex_events: {
     description:
-      "Read the bounded event journal after a sequence number. gap means older events were evicted. Use to recover results if channel delivery is unavailable; do not busy-poll.",
+      "Read the bounded event journal after a sequence number. gap means events were missed: older ones were evicted, or after came from an earlier bridge process. Use to recover results if channel delivery is unavailable; do not busy-poll.",
     schema: z.object({ after: z.number().int().nonnegative().optional() }),
   },
 };
@@ -70,9 +70,10 @@ export function createServer(
 ) {
   // One file per bridge process: concurrent Claude sessions each number their
   // events from 1, so a shared file would mix their sequences.
+  // Colons in the ISO time are invalid in Windows file names.
   const eventLog = eventLogDir
     ? join(
-        resolve(eventLogDir),
+        eventLogDir,
         `codex-bridge-${new Date().toISOString().replaceAll(":", "-")}-${process.pid}.jsonl`,
       )
     : undefined;
@@ -185,5 +186,5 @@ export function createServer(
 
 function eventLogInstructions(path: string) {
   const quoted = `'${path.replaceAll("'", "'\\''")}'`;
-  return `Every event is also appended to ${quoted} as one JSON line with the same sequence, threadId, kind, text, truncated and timestamp as codex_events. If channel events do not arrive in this session, follow that file with the Monitor tool, for example tail -n 0 -F ${quoted}. Monitor stops at its deadline: re-arm it while Codex work is running. Each time you arm or re-arm it, call codex_events with after set to the last sequence you saw to fill the gap. Stop monitoring once the Codex work you follow has finished.`;
+  return `Every event is also appended to ${quoted} as one JSON line with the same sequence, threadId, kind, text, truncated and timestamp as codex_events. If channel events do not arrive in this session, follow that file with the Monitor tool, for example tail -n 0 -F ${quoted}. Monitor stops at its deadline: re-arm it while Codex work is running. Before each re-arm, call codex_status: if its eventLog is not the file you followed, the bridge restarted, so follow the new file and reset your cursor to 0. After arming, call codex_events with after set to the last sequence you saw to fill the gap; if it reports gap, read the lines with a higher sequence from the file itself. Stop monitoring once the Codex work you follow has finished.`;
 }

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
@@ -51,6 +51,7 @@ export class Bridge {
   private closed = false;
   channelError: string | null = null;
   eventLogError: string | null = null;
+  private eventLogFd: number | undefined;
   failure: string | null = null;
 
   constructor(
@@ -61,12 +62,15 @@ export class Bridge {
     private eventLog?: string,
   ) {
     if (eventLog) {
-      // Create the file up front so a watcher can follow it before the first event.
-      // Owner-only modes: the log can hold Codex command output. A mode only
-      // applies when the directory or file is created.
+      // Created now so a watcher can follow it early; owner-only as events can hold command output.
       try {
+        if (!isAbsolute(eventLog))
+          throw new Error(
+            `event log directory must be absolute: ${dirname(eventLog)}`,
+          );
         mkdirSync(dirname(eventLog), { recursive: true, mode: 0o700 });
-        appendFileSync(eventLog, "", { mode: 0o600 });
+        // Exclusive create refuses a file or symlink planted at the path.
+        this.eventLogFd = openSync(eventLog, "ax", 0o600);
       } catch (error) {
         this.eventLogError = String(error);
       }
@@ -213,7 +217,8 @@ export class Bridge {
     return {
       events: this.journal.filter((event) => event.sequence > after),
       latestSequence: this.sequence,
-      gap: after < oldest - 1,
+      // A cursor past latestSequence came from an earlier bridge process.
+      gap: after < oldest - 1 || after > this.sequence,
     };
   }
 
@@ -432,12 +437,10 @@ export class Bridge {
     };
     this.journal.push(event);
     if (this.journal.length > this.journalLimit) this.journal.shift();
-    if (this.eventLog) {
+    if (this.eventLogFd !== undefined) {
       // One O_APPEND write per line keeps each event whole on its own line.
       try {
-        appendFileSync(this.eventLog, `${JSON.stringify(event)}\n`, {
-          mode: 0o600,
-        });
+        appendFileSync(this.eventLogFd, `${JSON.stringify(event)}\n`);
         this.eventLogError = null;
       } catch (error) {
         this.eventLogError = String(error);
@@ -458,5 +461,9 @@ export class Bridge {
     for (const threadId of this.buffers.keys()) this.flush(threadId);
     await this.rpc.close();
     await this.delivery;
+    if (this.eventLogFd !== undefined) {
+      closeSync(this.eventLogFd);
+      this.eventLogFd = undefined;
+    }
   }
 }

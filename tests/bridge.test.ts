@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -279,16 +279,37 @@ test("event log mirrors the journal as one JSON line per event", async () => {
   expect(bridge.status()).toMatchObject({ eventLog, eventLogError: null });
 });
 
-test("event log write failure leaves the bridge and channel delivery working", async () => {
+test("event log refuses a file already at its path and the bridge keeps working", async () => {
   const directory = await temporaryDirectory();
-  const { bridge, events } = fixture(undefined, undefined, 200, directory);
-  expect(bridge.status().eventLogError).toContain("EISDIR");
+  const eventLog = join(directory, "events.jsonl");
+  writeFileSync(eventLog, "planted\n");
+  const { bridge, events } = fixture(undefined, undefined, 200, eventLog);
   await bridge.start({ cwd, prompt: "instant" });
   await until(() => events.some((event) => event.kind === "completed"));
+  expect(readFileSync(eventLog, "utf8")).toBe("planted\n");
   expect(bridge.status()).toMatchObject({
-    eventLog: directory,
-    eventLogError: expect.stringContaining("EISDIR"),
+    eventLog,
+    eventLogError: expect.stringContaining("EEXIST"),
     channelError: null,
+  });
+});
+
+test("event log refuses a relative path", () => {
+  const { bridge } = fixture(undefined, undefined, 200, "logs/events.jsonl");
+  expect(bridge.status().eventLogError).toContain(
+    "event log directory must be absolute: logs",
+  );
+});
+
+test("a cursor from an earlier bridge process reports a gap", async () => {
+  const { bridge, events } = fixture();
+  await bridge.start({ cwd, prompt: "instant" });
+  await until(() => events.some((event) => event.kind === "completed"));
+  const { latestSequence } = bridge.events();
+  expect(bridge.events(latestSequence + 1)).toEqual({
+    events: [],
+    latestSequence,
+    gap: true,
   });
 });
 
