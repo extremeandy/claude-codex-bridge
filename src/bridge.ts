@@ -194,15 +194,20 @@ export class Bridge {
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
       this.failure = error.message;
-      // Codex sent these questions on the failed connection, so answers to
-      // them have nowhere to go.
+      // Codex sent these questions and approval requests on the failed
+      // connection, so answers to them have nowhere to go.
       const lost = new Map(
-        [...this.sessions.values()]
-          .filter((session) => session.questions.length)
-          .map((session) => [
-            session.threadId,
-            `; ${session.questions.length} pending question(s) lost and cannot be answered`,
-          ]),
+        [...this.sessions.values()].map((session) => [
+          session.threadId,
+          [
+            session.questions.length &&
+              `${session.questions.length} pending question(s)`,
+            session.approvals.length &&
+              `${session.approvals.length} pending approval request(s)`,
+          ]
+            .filter(Boolean)
+            .join(" and "),
+        ]),
       );
       this.markUnavailable();
       for (const session of this.sessions.values()) {
@@ -210,7 +215,9 @@ export class Bridge {
         this.emit(
           session.threadId,
           "unavailable",
-          `${error.message}${lost.get(session.threadId) ?? ""}`,
+          lost.get(session.threadId)
+            ? `${error.message}; ${lost.get(session.threadId)} lost and cannot be answered`
+            : error.message,
         );
       }
     };
@@ -270,24 +277,24 @@ export class Bridge {
   }
 
   async resume(threadId: string, requested: SettingsInput = {}) {
-    const settings = this.settings(requested);
+    const known = this.sessions.get(threadId);
+    // Settings are sent only when a thread is attached, so a different value
+    // for an attached thread would otherwise be silently ignored.
+    for (const key of [
+      "sandbox",
+      "approvalPolicy",
+      "approvalsReviewer",
+    ] as const)
+      if (known && requested[key] && requested[key] !== known[key])
+        throw new Error(
+          `Thread is already attached with ${key} ${known[key] ?? "unset"}`,
+        );
+    // A known thread keeps the settings it was attached with; a new one gets
+    // the requested settings within the operator's cap and defaults.
+    const settings = known ?? this.settings(requested);
     // Reconnects to the daemon after a failure, which reattaches known sessions.
     await this.rpc.connect();
-    const known = this.sessions.get(threadId);
-    if (known) {
-      // Settings are sent only when a thread is attached, so a different
-      // value for an attached thread would otherwise be silently ignored.
-      for (const key of [
-        "sandbox",
-        "approvalPolicy",
-        "approvalsReviewer",
-      ] as const)
-        if (requested[key] && requested[key] !== known[key])
-          throw new Error(
-            `Thread is already attached with ${key} ${known[key] ?? "unset"}`,
-          );
-      if (known.status !== "unavailable") return this.snapshot(known);
-    }
+    if (known && known.status !== "unavailable") return this.snapshot(known);
     // No bridge defaults for model and effort here: a resumed thread keeps
     // its own last model and effort.
     return this.snapshot(await this.resumeThread(threadId, settings));
@@ -436,10 +443,7 @@ export class Bridge {
   // Subscribes this connection to the thread and takes its state from the
   // latest turn. A known session is updated in place because in-flight
   // control calls hold it.
-  private async resumeThread(
-    threadId: string,
-    settings: ThreadSettings = defaultSettings,
-  ) {
+  private async resumeThread(threadId: string, settings: ThreadSettings) {
     const result = await this.rpc.call("thread/resume", {
       threadId,
       ...this.settingsParams(settings),
@@ -456,6 +460,9 @@ export class Bridge {
       session.turnId = turn.status === "inProgress" ? turn.id : null;
       session.status = turn.status === "inProgress" ? "running" : turn.status;
     }
+    // A request Codex sends on this connection before the resume response
+    // still holds the running turn.
+    if (session.status === "running") this.settleWaiting(session);
     for (const item of turn?.items ?? []) {
       if (item.type === "agentMessage") this.answerText(session, item.text);
     }
@@ -463,16 +470,18 @@ export class Bridge {
   }
 
   // After a reconnect, sessions from the failed connection receive no events
-  // until resumed on the new one.
+  // until resumed on the new one. Each resumes with its own settings, so a
+  // reconnect never widens its sandbox or approval policy.
   private async reattach() {
     this.failure = null;
     const lost = [...this.sessions.values()].filter(
       (session) => session.status === "unavailable",
     );
     await Promise.all(
-      lost.map(async ({ threadId }) => {
+      lost.map(async (known) => {
+        const { threadId } = known;
         try {
-          const session = await this.resumeThread(threadId);
+          const session = await this.resumeThread(threadId, known);
           this.emit(threadId, "reconnected", `Reattached: ${session.status}`);
         } catch (error) {
           this.emit(threadId, "unavailable", `Reattach failed: ${error}`);

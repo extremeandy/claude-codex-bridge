@@ -401,10 +401,12 @@ its own app-server. Its turns run in the daemon:
 If the connection to the daemon drops, for example because the daemon
 restarted, the bridge marks its sessions `unavailable`. The next
 `codex_models`, `codex_start`, `codex_message`, `codex_stop` or `codex_resume`
-call opens a new connection and resumes those sessions, taking their status
-from the daemon. Questions Codex asked on the dropped connection are lost and
-cannot be answered. If the daemon is not running, Codex tools fail with a
-connection error, and each later call tries to connect again.
+call opens a new connection and resumes those sessions with their own sandbox
+and approval settings, taking their status from the daemon. Questions and
+approval requests Codex sent on the dropped connection are lost and cannot be
+answered; the `unavailable` event counts them. If the daemon is not running,
+Codex tools fail with a connection error, and each later call tries to connect
+again.
 
 Run `codex app-server daemon version` to check the daemon and
 `codex app-server daemon stop` to stop it. Starting the daemon also starts a

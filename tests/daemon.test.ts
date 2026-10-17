@@ -8,7 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import { WebSocketServer } from "ws";
 import { AppServer } from "../src/app-server.ts";
-import { Bridge, type BridgeEvent } from "../src/bridge.ts";
+import { Bridge, type BridgeEvent, type Configured } from "../src/bridge.ts";
 import { configFromEnv } from "../src/server.ts";
 
 const fixtures = resolve(import.meta.dirname, "fixtures");
@@ -40,11 +40,14 @@ async function startDaemon(directory?: string) {
     stdio: "pipe",
   });
   const methods: string[] = [];
+  const requests: { method: string; params?: Record<string, unknown> }[] = [];
   const http = createServer();
   const server = new WebSocketServer({ server: http });
   server.on("connection", (client) =>
     client.on("message", (data) => {
-      methods.push(JSON.parse(String(data)).method);
+      const request = JSON.parse(String(data));
+      methods.push(request.method);
+      requests.push(request);
       backend.stdin.write(`${data}\n`);
     }),
   );
@@ -67,19 +70,23 @@ async function startDaemon(directory?: string) {
     return stopped;
   };
   cleanups.push(stop);
-  return { socketPath, backend, methods, drop, stop };
+  return { socketPath, backend, methods, requests, drop, stop };
 }
 
-function proxied(socketPath: string) {
+function proxied(socketPath: string, configured?: Configured) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer({
     command: [process.execPath, join(fixtures, "proxy.ts"), socketPath],
     daemon: true,
     timeoutMs: 2_000,
   });
-  const bridge = new Bridge(rpc, async (event) => {
-    events.push(event);
-  });
+  const bridge = new Bridge(
+    rpc,
+    async (event) => {
+      events.push(event);
+    },
+    { configured },
+  );
   cleanups.push(() => bridge.close());
   return { bridge, events };
 }
@@ -154,6 +161,79 @@ test("after a dropped connection the next call reconnects and reattaches the run
   expect(bridge.status(session.threadId).sessions[0].lastAnswer).toBe(
     "steered: after",
   );
+});
+
+test("a reconnect resumes each session with its own settings and reports lost approvals", async () => {
+  const daemon = await startDaemon();
+  const { bridge, events } = proxied(daemon.socketPath);
+  const session = await bridge.start({
+    cwd: process.cwd(),
+    prompt: "approve_command",
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+  });
+  await until(() => events.some((event) => event.kind === "approval"));
+  const { requestId } = bridge.status(session.threadId).sessions[0]
+    .approvals[0];
+
+  daemon.drop();
+  await until(() => events.some((event) => event.kind === "unavailable"));
+  expect(events.find((event) => event.kind === "unavailable")?.text).toContain(
+    "1 pending approval request(s) lost and cannot be answered",
+  );
+  expect(() => bridge.approve(session.threadId, requestId, "accept")).toThrow(
+    "Unknown or expired approval request",
+  );
+
+  const resumed = await bridge.resume(session.threadId);
+  expect(resumed).toMatchObject({
+    status: "running",
+    sandbox: "workspace-write",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    approvals: [],
+  });
+  expect(events.find((event) => event.kind === "reconnected")?.text).toBe(
+    "Reattached: running",
+  );
+  const resumes = daemon.requests.filter(
+    (request) => request.method === "thread/resume",
+  );
+  expect(resumes.map((request) => request.params)).toEqual([
+    expect.objectContaining({
+      threadId: session.threadId,
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+    }),
+  ]);
+  expect(JSON.stringify(daemon.requests)).not.toContain("danger-full-access");
+});
+
+test("resume after a reconnect refuses settings that differ from the session's", async () => {
+  const daemon = await startDaemon();
+  const { bridge } = proxied(daemon.socketPath, {
+    sandbox: "workspace-write",
+  });
+  const session = await bridge.start({
+    cwd: process.cwd(),
+    prompt: "work",
+    sandbox: "read-only",
+  });
+  daemon.drop();
+  await until(
+    () => bridge.status(session.threadId).sessions[0].status === "unavailable",
+  );
+  await expect(
+    bridge.resume(session.threadId, { sandbox: "workspace-write" }),
+  ).rejects.toThrow("already attached with sandbox read-only");
+  expect((await bridge.resume(session.threadId)).sandbox).toBe("read-only");
+  expect(
+    daemon.requests
+      .filter((request) => request.method === "thread/resume")
+      .map((request) => request.params?.sandbox),
+  ).toEqual(["read-only"]);
 });
 
 test("resume reattaches a session after the daemon restarts", async () => {
