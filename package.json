@@ -10,7 +10,9 @@
     "vitest": "5.0.0",
     "@vitest/coverage-v8": "5.0.0",
     "esbuild": "0.28.2",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "ws": "8.22.0",
+    "@types/ws": "8.18.2"
   },
   "version": "0.1.4",
   "description": "Run live Codex agents from Claude Code through MCP and Channels.",

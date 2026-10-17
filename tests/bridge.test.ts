@@ -23,10 +23,10 @@ function fixture(
   limit = 200,
 ) {
   const events: BridgeEvent[] = [];
-  const rpc = new AppServer(
-    mode ? [...command, mode] : command,
-    mode === "hang" ? 80 : 2_000,
-  );
+  const rpc = new AppServer({
+    command: mode ? [...command, mode] : command,
+    timeoutMs: mode === "hang" ? 80 : 2_000,
+  });
   const bridge = new Bridge(
     rpc,
     publish ??
@@ -272,7 +272,7 @@ test.each(["hang", "malformed", "null"])(
 );
 
 test("missing executable and unconnected requests fail without hanging", async () => {
-  const missing = new AppServer(["/does-not-exist/codex"]);
+  const missing = new AppServer({ command: ["/does-not-exist/codex"] });
   await expect(missing.connect()).rejects.toThrow();
   await missing.close();
   const unconnected = new AppServer();

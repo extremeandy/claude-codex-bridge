@@ -14,10 +14,12 @@ const cleanups: (() => Promise<void>)[] = [];
 test("stdio EOF closes the Codex child and shutdown is idempotent", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
-  const rpc = new AppServer([
-    process.execPath,
-    resolve(import.meta.dirname, "fixtures/app-server.ts"),
-  ]);
+  const rpc = new AppServer({
+    command: [
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ],
+  });
   const { bridge, shutdown } = await main(input, output, rpc);
   await bridge.models();
   input.end();
@@ -31,10 +33,12 @@ afterEach(async () => {
 });
 
 async function connect() {
-  const rpc = new AppServer([
-    process.execPath,
-    resolve(import.meta.dirname, "fixtures/app-server.ts"),
-  ]);
+  const rpc = new AppServer({
+    command: [
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ],
+  });
   const { server, bridge } = createServer(rpc, 5);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];

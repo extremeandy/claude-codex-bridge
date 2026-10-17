@@ -64,12 +64,18 @@ export class Bridge {
       this.requests.clear();
       for (const session of this.sessions.values()) {
         this.flush(session.threadId);
+        // Codex sent these questions on the failed connection, so answers
+        // to them have nowhere to go.
+        const lost = session.questions.length
+          ? `; ${session.questions.length} pending question(s) lost and cannot be answered`
+          : "";
         session.status = "unavailable";
         session.turnId = null;
         session.questions = [];
-        this.emit(session.threadId, "unavailable", error.message);
+        this.emit(session.threadId, "unavailable", `${error.message}${lost}`);
       }
     };
+    rpc.onConnect = () => this.reattach();
   }
 
   async models(cursor?: string) {
@@ -103,26 +109,10 @@ export class Bridge {
   }
 
   async resume(threadId: string) {
-    if (this.sessions.has(threadId))
-      return this.snapshot(this.session(threadId));
     await this.rpc.connect();
-    const result = await this.rpc.call("thread/resume", {
-      threadId,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
-    });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
-    const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
-    if (turn) {
-      session.lastTurnId = turn.id;
-      session.turnId = turn.status === "inProgress" ? turn.id : null;
-      session.status = turn.status === "inProgress" ? "running" : turn.status;
-    }
-    for (const item of turn?.items ?? []) {
-      if (item.type === "agentMessage") this.answerText(session, item.text);
-    }
-    return this.snapshot(session);
+    const known = this.sessions.get(threadId);
+    if (known && known.status !== "unavailable") return this.snapshot(known);
+    return this.snapshot(await this.resumeThread(threadId));
   }
 
   async message(threadId: string, message: string) {
@@ -200,6 +190,52 @@ export class Bridge {
     };
   }
 
+  // Subscribes this connection to the thread and takes its state from the
+  // latest turn. A known session is updated in place because in-flight
+  // control calls hold it.
+  private async resumeThread(threadId: string) {
+    const result = await this.rpc.call("thread/resume", {
+      threadId,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
+    });
+    const session =
+      this.sessions.get(result.thread.id) ??
+      this.attach(result.thread.id, result.model, result.cwd);
+    const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
+    session.status = "idle";
+    session.turnId = null;
+    if (turn) {
+      session.lastTurnId = turn.id;
+      session.turnId = turn.status === "inProgress" ? turn.id : null;
+      session.status = turn.status === "inProgress" ? "running" : turn.status;
+    }
+    for (const item of turn?.items ?? []) {
+      if (item.type === "agentMessage") this.answerText(session, item.text);
+    }
+    return session;
+  }
+
+  // After a reconnect, sessions from the failed connection receive no events
+  // until resumed on the new one.
+  private async reattach() {
+    this.failure = null;
+    const lost = [...this.sessions.values()].filter(
+      (session) => session.status === "unavailable",
+    );
+    await Promise.all(
+      lost.map(async ({ threadId }) => {
+        try {
+          const session = await this.resumeThread(threadId);
+          this.emit(threadId, "reconnected", `Reattached: ${session.status}`);
+        } catch (error) {
+          this.emit(threadId, "unavailable", `Reattach failed: ${error}`);
+        }
+      }),
+    );
+  }
+
   private attach(threadId: string, model: string, cwd: string) {
     const session: Session = {
       threadId,
@@ -232,10 +268,12 @@ export class Bridge {
   private async lock<T>(session: Session, action: () => Promise<T>) {
     if (this.busy.has(session.threadId))
       throw new Error("A control request for this thread is already in flight");
-    if (session.status === "unavailable")
-      throw new Error(this.failure ?? "Codex unavailable");
     this.busy.add(session.threadId);
     try {
+      // Reconnects to the daemon after a failure and reattaches this session.
+      await this.rpc.connect();
+      if (session.status === "unavailable")
+        throw new Error(this.failure ?? "Codex unavailable");
       return await action();
     } finally {
       this.busy.delete(session.threadId);
