@@ -1,5 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
@@ -49,6 +50,7 @@ export class Bridge {
   private delivery = Promise.resolve();
   private closed = false;
   channelError: string | null = null;
+  eventLogError: string | null = null;
   failure: string | null = null;
 
   constructor(
@@ -56,7 +58,17 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    private eventLog?: string,
   ) {
+    if (eventLog) {
+      // Create the file up front so a watcher can follow it before the first event.
+      try {
+        mkdirSync(dirname(eventLog), { recursive: true });
+        appendFileSync(eventLog, "");
+      } catch (error) {
+        this.eventLogError = String(error);
+      }
+    }
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
@@ -187,6 +199,9 @@ export class Bridge {
         : [...this.sessions.values()].map((session) => this.snapshot(session)),
       failure: this.failure,
       channelError: this.channelError,
+      ...(this.eventLog
+        ? { eventLog: this.eventLog, eventLogError: this.eventLogError }
+        : {}),
       latestSequence: this.sequence,
     };
   }
@@ -415,6 +430,15 @@ export class Bridge {
     };
     this.journal.push(event);
     if (this.journal.length > this.journalLimit) this.journal.shift();
+    if (this.eventLog) {
+      // One O_APPEND write per line keeps each event whole on its own line.
+      try {
+        appendFileSync(this.eventLog, `${JSON.stringify(event)}\n`);
+        this.eventLogError = null;
+      } catch (error) {
+        this.eventLogError = String(error);
+      }
+    }
     this.delivery = this.delivery.then(async () => {
       try {
         await this.publish(event);

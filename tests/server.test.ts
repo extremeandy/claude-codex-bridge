@@ -1,4 +1,7 @@
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -30,12 +33,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect() {
+async function connect(eventLogDir = "") {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, 5);
+  const { server, bridge } = createServer(rpc, 5, eventLogDir);
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -127,4 +130,30 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
       })
     ).isError,
   ).toBe(true);
+});
+
+test("an event log directory gets a per-process file named in the instructions and status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-bridge-log-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const { client, call, events } = await connect(join(directory, "logs"));
+  const [file] = readdirSync(join(directory, "logs"));
+  expect(file).toMatch(new RegExp(`^codex-bridge-.*-${process.pid}\\.jsonl$`));
+  const eventLog = join(directory, "logs", file);
+  expect(client.getInstructions()).toContain(`tail -n 0 -F '${eventLog}'`);
+  expect(await call("codex_status")).toMatchObject({
+    eventLog,
+    eventLogError: null,
+  });
+  await call("codex_start", { cwd: process.cwd(), prompt: "instant" });
+  await sleep(10);
+  const lines = readFileSync(eventLog, "utf8").trimEnd().split("\n");
+  expect(lines.map((line) => JSON.parse(line).sequence)).toEqual(
+    events.map((event) => Number(event.meta.sequence)),
+  );
+});
+
+test("without an event log directory the instructions do not mention a file", async () => {
+  const { client } = await connect();
+  expect(client.getInstructions()).not.toContain("Monitor");
+  expect(client.getInstructions()).toMatch(/approvalPolicy never\.$/);
 });
