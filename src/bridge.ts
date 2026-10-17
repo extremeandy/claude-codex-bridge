@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import type { ReasoningEffort } from "../.generated/ReasoningEffort.ts";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
@@ -14,7 +15,7 @@ export type BridgeEvent = {
   timestamp: string;
 };
 type Question = { requestId: string; params: ToolRequestUserInputParams };
-type TurnSettings = { model?: string; effort?: string };
+type TurnSettings = { model?: string; effort?: ReasoningEffort };
 type Session = {
   threadId: string;
   model: string;
@@ -83,7 +84,7 @@ export class Bridge {
     cwd: string;
     model?: string;
     serviceTier?: string;
-    effort?: string;
+    effort?: ReasoningEffort;
   }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");

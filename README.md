@@ -159,11 +159,9 @@ different model or effort when sending the next message:
 > Continue that Codex session with model gpt-5.6-luna and high effort: implement
 > the proposed fix.
 
-A model or effort applies when a message starts a new turn, and it stays the
-thread's default for later turns. A message to a running turn steers it, and
-Codex cannot change the model or effort of a turn in progress, so the bridge
-rejects a model or effort sent while a turn is running. Wait for the turn to
-finish, or interrupt it, and then send the message again.
+A new model or effort stays the thread's default for later turns. Codex cannot
+change either for a turn in progress, so the bridge refuses them while a turn
+is running.
 
 ## Available tools
 
