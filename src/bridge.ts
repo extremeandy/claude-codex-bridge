@@ -62,9 +62,11 @@ export class Bridge {
   ) {
     if (eventLog) {
       // Create the file up front so a watcher can follow it before the first event.
+      // Owner-only modes: the log can hold Codex command output. A mode only
+      // applies when the directory or file is created.
       try {
-        mkdirSync(dirname(eventLog), { recursive: true });
-        appendFileSync(eventLog, "");
+        mkdirSync(dirname(eventLog), { recursive: true, mode: 0o700 });
+        appendFileSync(eventLog, "", { mode: 0o600 });
       } catch (error) {
         this.eventLogError = String(error);
       }
@@ -433,7 +435,9 @@ export class Bridge {
     if (this.eventLog) {
       // One O_APPEND write per line keeps each event whole on its own line.
       try {
-        appendFileSync(this.eventLog, `${JSON.stringify(event)}\n`);
+        appendFileSync(this.eventLog, `${JSON.stringify(event)}\n`, {
+          mode: 0o600,
+        });
         this.eventLogError = null;
       } catch (error) {
         this.eventLogError = String(error);

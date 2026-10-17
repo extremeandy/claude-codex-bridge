@@ -220,7 +220,9 @@ Claude after changing it.
 
 Each bridge process creates its own file in that directory,
 `codex-bridge-<start time>-<pid>.jsonl`, so concurrent Claude sessions never
-share one. The bridge creates the directory if needed. Each line is one JSON
+share one. The bridge creates the directory if needed. It creates the
+directory and file readable only by you, since events can include command
+output. Each line is one JSON
 event with the same `sequence`, `threadId`, `kind`, `text`, `truncated`, and
 `timestamp` that `codex_events` returns. Channel notifications are still sent.
 

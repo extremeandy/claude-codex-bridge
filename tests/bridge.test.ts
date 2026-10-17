@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -266,6 +266,8 @@ test("event log mirrors the journal as one JSON line per event", async () => {
   const eventLog = join(directory, "nested", "events.jsonl");
   const { bridge, events } = fixture(undefined, undefined, 200, eventLog);
   expect(readFileSync(eventLog, "utf8")).toBe("");
+  expect(statSync(join(directory, "nested")).mode & 0o777).toBe(0o700);
+  expect(statSync(eventLog).mode & 0o777).toBe(0o600);
   const session = await bridge.start({ cwd, prompt: "work" });
   await bridge.message(session.threadId, "first line\nsecond line");
   await until(() => events.some((event) => event.kind === "completed"));
