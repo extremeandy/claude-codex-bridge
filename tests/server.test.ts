@@ -1,4 +1,7 @@
-import { resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -6,9 +9,12 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
 import { AppServer } from "../src/app-server.ts";
-import type { Configured } from "../src/bridge.ts";
 import { main } from "../src/index.ts";
-import { configFromEnv, createServer } from "../src/server.ts";
+import {
+  configFromEnv,
+  createServer,
+  type ServerOptions,
+} from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -31,12 +37,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect(configured: Configured = {}) {
+async function connect(options: Omit<ServerOptions, "progressMs"> = {}) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
   ]);
-  const { server, bridge } = createServer(rpc, { progressMs: 5, configured });
+  const { server, bridge } = createServer(rpc, { progressMs: 5, ...options });
   const client = new Client({ name: "test", version: "1" });
   const events: { content: string; meta: Record<string, string> }[] = [];
   client.setNotificationHandler(
@@ -207,7 +213,9 @@ test("CODEX_BRIDGE_SANDBOX sets the default and maximum sandbox and rejects empt
       "CODEX_BRIDGE_SANDBOX must be one of read-only, workspace-write, danger-full-access",
     );
   }
-  const { client, call } = await connect({ sandbox: "workspace-write" });
+  const { client, call } = await connect({
+    configured: { sandbox: "workspace-write" },
+  });
   expect(client.getInstructions()).toContain(
     "(sandbox default and maximum workspace-write;",
   );
@@ -260,8 +268,10 @@ test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults and re
     }).configured,
   ).toEqual({ model: "fixture-2", effort: "high" });
   const { client, call } = await connect({
-    model: "fixture-2",
-    effort: "high",
+    configured: {
+      model: "fixture-2",
+      effort: "high",
+    },
   });
   const help =
     "Without model, codex_start uses fixture-2. Without effort, codex_start uses reasoning effort high, whatever the model.";
@@ -321,8 +331,10 @@ test("approval env defaults are validated and unset keeps never with no reviewer
     configFromEnv({ CODEX_BRIDGE_APPROVALS_REVIEWER: "guardian_subagent" }),
   ).toThrow("CODEX_BRIDGE_APPROVALS_REVIEWER must be one of user, auto_review");
   const { client } = await connect({
-    approvalPolicy: "untrusted",
-    approvalsReviewer: "user",
+    configured: {
+      approvalPolicy: "untrusted",
+      approvalsReviewer: "user",
+    },
   });
   expect(client.getInstructions()).toContain(
     "(sandbox default danger-full-access; approvalPolicy default untrusted; approvalsReviewer default user)",
@@ -378,4 +390,52 @@ test("MCP approval requests surface as events and codex_approve answers them", a
       })
     ).isError,
   ).toBe(true);
+});
+
+test("an event log directory gets a per-process file named in the instructions and status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-bridge-log-"));
+  cleanups.push(() => rm(directory, { recursive: true, force: true }));
+  const { client, call, events } = await connect({
+    eventLogDir: join(directory, "logs"),
+  });
+  const [file] = readdirSync(join(directory, "logs"));
+  expect(file).toMatch(new RegExp(`^codex-bridge-.*-${process.pid}\\.jsonl$`));
+  const eventLog = join(directory, "logs", file);
+  expect(client.getInstructions()).toContain(`tail -n 0 -F '${eventLog}'`);
+  expect(await call("codex_status")).toMatchObject({
+    eventLog,
+    eventLogError: null,
+  });
+  await call("codex_start", { cwd: process.cwd(), prompt: "instant" });
+  await sleep(10);
+  const lines = readFileSync(eventLog, "utf8").trimEnd().split("\n");
+  expect(lines.map((line) => JSON.parse(line).sequence)).toEqual(
+    events.map((event) => Number(event.meta.sequence)),
+  );
+});
+
+test("CODEX_BRIDGE_EVENT_LOG_DIR must be absolute; empty or relative fails startup", async () => {
+  expect(configFromEnv({}).eventLogDir).toBeUndefined();
+  expect(
+    configFromEnv({ CODEX_BRIDGE_EVENT_LOG_DIR: "/tmp/logs" }).eventLogDir,
+  ).toBe("/tmp/logs");
+  for (const value of ["", "logs"]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, {
+        CODEX_BRIDGE_EVENT_LOG_DIR: value,
+      }),
+    ).rejects.toThrow(
+      "CODEX_BRIDGE_EVENT_LOG_DIR must be an absolute directory",
+    );
+  }
+});
+
+test("without an event log directory the instructions do not mention a file", async () => {
+  const { client } = await connect();
+  expect(client.getInstructions()).not.toContain("Monitor");
+  expect(client.getInstructions()).toMatch(/explicitly did\.$/);
 });

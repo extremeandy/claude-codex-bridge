@@ -1,5 +1,6 @@
+import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import type { ReasoningEffort } from "../.generated/ReasoningEffort.ts";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
@@ -84,6 +85,8 @@ export type BridgeOptions = {
   progressMs?: number;
   journalLimit?: number;
   configured?: Configured;
+  /** An absolute file path that every event is also appended to. */
+  eventLog?: string;
 };
 type ApprovalRequest = Extract<
   ServerRequest,
@@ -150,11 +153,14 @@ export class Bridge {
   private delivery = Promise.resolve();
   private closed = false;
   channelError: string | null = null;
+  eventLogError: string | null = null;
+  private eventLogFd: number | undefined;
   failure: string | null = null;
 
   private progressMs: number;
   private journalLimit: number;
   private configured: Configured;
+  private eventLog: string | undefined;
 
   constructor(
     private rpc: AppServer,
@@ -163,11 +169,27 @@ export class Bridge {
       progressMs = 1_000,
       journalLimit = 200,
       configured = {},
+      eventLog,
     }: BridgeOptions = {},
   ) {
     this.progressMs = progressMs;
     this.journalLimit = journalLimit;
     this.configured = configured;
+    this.eventLog = eventLog;
+    if (eventLog) {
+      // Created now so a watcher can follow it early; owner-only as events can hold command output.
+      try {
+        if (!isAbsolute(eventLog))
+          throw new Error(
+            `event log directory must be absolute: ${dirname(eventLog)}`,
+          );
+        mkdirSync(dirname(eventLog), { recursive: true, mode: 0o700 });
+        // Exclusive create refuses a file or symlink planted at the path.
+        this.eventLogFd = openSync(eventLog, "ax", 0o600);
+      } catch (error) {
+        this.eventLogError = String(error);
+      }
+    }
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
@@ -363,6 +385,9 @@ export class Bridge {
         : [...this.sessions.values()].map((session) => this.snapshot(session)),
       failure: this.failure,
       channelError: this.channelError,
+      ...(this.eventLog
+        ? { eventLog: this.eventLog, eventLogError: this.eventLogError }
+        : {}),
       latestSequence: this.sequence,
     };
   }
@@ -372,7 +397,8 @@ export class Bridge {
     return {
       events: this.journal.filter((event) => event.sequence > after),
       latestSequence: this.sequence,
-      gap: after < oldest - 1,
+      // A cursor past latestSequence came from an earlier bridge process.
+      gap: after < oldest - 1 || after > this.sequence,
     };
   }
 
@@ -707,6 +733,15 @@ export class Bridge {
     };
     this.journal.push(event);
     if (this.journal.length > this.journalLimit) this.journal.shift();
+    if (this.eventLogFd !== undefined) {
+      // One O_APPEND write per line keeps each event whole on its own line.
+      try {
+        appendFileSync(this.eventLogFd, `${JSON.stringify(event)}\n`);
+        this.eventLogError = null;
+      } catch (error) {
+        this.eventLogError = String(error);
+      }
+    }
     this.delivery = this.delivery.then(async () => {
       try {
         await this.publish(event);
@@ -739,6 +774,10 @@ export class Bridge {
     this.markUnavailable();
     await this.rpc.close();
     await this.delivery;
+    if (this.eventLogFd !== undefined) {
+      closeSync(this.eventLogFd);
+      this.eventLogFd = undefined;
+    }
   }
 }
 
