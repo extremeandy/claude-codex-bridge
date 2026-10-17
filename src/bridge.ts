@@ -100,7 +100,15 @@ export class Bridge {
     });
     const session = this.attach(result.thread.id, result.model, result.cwd);
     return this.lock(session, async () => {
-      await this.begin(session, input.prompt, { effort: input.effort });
+      try {
+        await this.begin(session, input.prompt, { effort: input.effort });
+      } catch (error) {
+        // The thread exists and stays attached, so the caller needs its id to retry or resume.
+        throw new Error(
+          `Thread ${session.threadId} started, but its first turn failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
       return this.snapshot(session);
     });
   }

@@ -141,6 +141,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id, error: { code: -1, message: "model unavailable" } });
         break;
       }
+      if (params.effort === "missing") {
+        send({ id, error: { code: -1, message: "effort unavailable" } });
+        break;
+      }
       thread.model = params.model ?? thread.model;
       thread.effort = params.effort ?? thread.effort;
       if (prompt === "crash") {

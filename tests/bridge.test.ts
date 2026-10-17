@@ -113,6 +113,22 @@ test("a rejected per-turn model leaves the recorded model unchanged", async () =
   expect(bridge.status(session.threadId).sessions[0].model).toBe("fixture");
 });
 
+test("a rejected first turn names the started thread so the caller can retry it", async () => {
+  const { bridge } = fixture();
+  const error = await bridge
+    .start({ cwd, prompt: "settings", effort: "missing" })
+    .catch((error: Error) => error);
+  expect(error).toBeInstanceOf(Error);
+  const threadId = /Thread (\S+) started/.exec(String(error))?.[1];
+  expect(String(error)).toContain("effort unavailable");
+  expect(threadId).toBeDefined();
+  expect(bridge.status(threadId).sessions[0].status).toBe("failed");
+  const retried = await bridge.message(String(threadId), "settings", {
+    effort: "high",
+  });
+  expect(retried.lastAnswer).toBe("fixture/high");
+});
+
 test("a turn that completes before its start response stays completed", async () => {
   const { bridge } = fixture();
   const session = await bridge.start({ cwd, prompt: "instant" });
