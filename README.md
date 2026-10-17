@@ -153,6 +153,34 @@ Claude can list available models with `codex_models`. An explicitly selected
 model is requested without provider fallback. Ask for a service tier such as
 `fast` to override the `service_tier` in your Codex config for that thread.
 
+## Relay mode
+
+The plugin ships an opt-in output style, `codex-relay`, that makes Claude a thin
+relay to Codex. Claude sends each task to one persistent Codex thread with the
+context Codex needs, reports progress, and passes Codex's answers through close
+to verbatim. Codex does the reading, reasoning, and editing. Claude still steers
+or stops the running turn when you ask, and brings Codex's questions and
+approval requests to you rather than deciding them itself.
+
+Select it in the terminal with `/output-style claude-codex-bridge:codex-relay`,
+or from `/config` under **Output style**. The desktop app has no output style
+menu, so set it in a settings file there:
+
+```json
+{
+  "outputStyle": "claude-codex-bridge:codex-relay"
+}
+```
+
+Use `.claude/settings.local.json` for one project or `~/.claude/settings.json`
+for every project. The value is case-sensitive. Claude follows the style from
+your next message.
+
+The style drops Claude Code's built-in coding instructions, since Codex does the
+coding. Codex does the heavy work, so run the relay session on a cheaper Claude
+model such as Sonnet: start it with `claude --model sonnet` or switch with
+`/model sonnet`.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |
