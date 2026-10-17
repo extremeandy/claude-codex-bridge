@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import type { Readable, Writable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AppServer } from "./app-server.ts";
+import { AppServer, appServerConfig } from "./app-server.ts";
 import { createServer } from "./server.ts";
 
 export async function main(
   input: Readable = process.stdin,
   output: Writable = process.stdout,
-  rpc = new AppServer(),
+  rpc = newAppServer(),
 ) {
   const { server, bridge } = createServer(rpc);
   let closing: Promise<void> | undefined;
@@ -29,6 +29,11 @@ export async function main(
   output.once("error", shutdown);
   await server.connect(new StdioServerTransport(input, output));
   return { bridge, shutdown };
+}
+
+function newAppServer() {
+  const { command, framing } = appServerConfig();
+  return new AppServer(command, undefined, framing);
 }
 
 if (import.meta.main) await main();

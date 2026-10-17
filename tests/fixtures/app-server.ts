@@ -88,7 +88,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/resume": {
       if (params.initialTurnsPage?.itemsView !== "full")
         throw new Error("Resume needs full recent items");
-      const thread = {
+      // A thread still loaded in this app-server resumes with its live turn.
+      const thread = threads.get(params.threadId) ?? {
         model: "fixture",
         cwd: process.cwd(),
         turnId: params.threadId === "active" ? "resumed-turn" : "",

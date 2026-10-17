@@ -1,5 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { Duplex } from "node:stream";
+import WebSocket from "ws";
 import type { ClientRequest } from "../.generated/ClientRequest.ts";
 import type { InitializeResponse } from "../.generated/InitializeResponse.ts";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
@@ -20,17 +22,42 @@ type Results = {
   "turn/steer": TurnSteerResponse;
   "turn/interrupt": Record<string, never>;
 };
+type Framing = "jsonl" | "websocket";
 type Pending = {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
+const privateCommand = ["codex", "app-server", "--listen", "stdio://"];
+
+/**
+ * Chooses the app-server from CODEX_BRIDGE_APP_SERVER. Unset starts a private
+ * app-server that exits with the bridge. "daemon" connects to the shared
+ * local daemon (`codex app-server daemon start`), whose turns outlive the
+ * bridge.
+ */
+export function appServerConfig(env: NodeJS.ProcessEnv = process.env): {
+  command: string[];
+  framing: Framing;
+} {
+  const mode = env.CODEX_BRIDGE_APP_SERVER;
+  if (!mode) return { command: [...privateCommand], framing: "jsonl" };
+  // The proxy pipes bytes to the daemon's control socket, which speaks
+  // JSON-RPC over WebSocket rather than one JSON message per line.
+  if (mode === "daemon")
+    return { command: ["codex", "app-server", "proxy"], framing: "websocket" };
+  throw new Error(
+    `CODEX_BRIDGE_APP_SERVER must be unset or "daemon", not ${JSON.stringify(mode)}`,
+  );
+}
+
 export class AppServer {
   onNotification?: (event: ServerNotification) => void;
   onRequest?: (request: ServerRequest) => void;
   onFailure?: (error: Error) => void;
   private child?: ChildProcessWithoutNullStreams;
+  private socket?: WebSocket;
   private ready?: Promise<void>;
   private failure?: Error;
   private pending = new Map<number, Pending>();
@@ -38,8 +65,9 @@ export class AppServer {
   private stopping = false;
 
   constructor(
-    private command = ["codex", "app-server", "--listen", "stdio://"],
+    private command = privateCommand,
     private timeoutMs = 30_000,
+    private framing: Framing = "jsonl",
   ) {}
 
   connect(): Promise<void> {
@@ -56,8 +84,30 @@ export class AppServer {
     this.child.on("exit", (code, signal) =>
       this.fail(new Error(`Codex app-server exited: ${code ?? signal}`)),
     );
-    const lines = createInterface({ input: this.child.stdout });
-    lines.on("line", (line) => this.receive(line));
+    if (this.framing === "websocket") {
+      const { stdout, stdin } = this.child;
+      const socket = new WebSocket("ws://localhost/", {
+        createConnection: () =>
+          Duplex.from({ readable: stdout, writable: stdin }),
+        handshakeTimeout: this.timeoutMs,
+        perMessageDeflate: false,
+      });
+      this.socket = socket;
+      socket.on("message", (data) => this.receive(String(data)));
+      socket.on("close", () =>
+        this.fail(new Error("Codex app-server connection closed")),
+      );
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.on("error", (error) => {
+          this.fail(error);
+          reject(error);
+        });
+      });
+    } else {
+      const lines = createInterface({ input: this.child.stdout });
+      lines.on("line", (line) => this.receive(line));
+    }
     await this.call("initialize", {
       clientInfo: {
         name: "claude_codex_bridge",
@@ -105,7 +155,8 @@ export class AppServer {
   private write(message: unknown) {
     if (this.failure) throw this.failure;
     if (!this.child) throw new Error("Codex app-server is not connected");
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    if (this.socket) this.socket.send(JSON.stringify(message));
+    else this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private receive(line: string) {
@@ -142,6 +193,8 @@ export class AppServer {
     if (!this.stopping) this.onFailure?.(error);
   }
 
+  // Ends the child without interrupting turns. For the daemon the child is
+  // only the proxy, so the daemon keeps running the bridge's turns.
   async close() {
     this.stopping = true;
     this.fail(new Error("Bridge closed"));
