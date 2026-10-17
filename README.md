@@ -187,14 +187,42 @@ project directory and tasks with that execution mode in mind.
 
 The plugin uses Codex's existing authentication and configuration. It adds no
 API proxy, model impersonation, interception hook, or global timeout override.
-Exiting Claude stops the bridge and its app-server process. Saved Codex threads
-can be resumed; running work is not hosted by a background daemon.
+By default, exiting Claude stops the bridge and its private app-server process,
+which ends any running turn. Saved Codex threads can be resumed. To keep turns
+running after Claude exits, use the
+[shared Codex daemon](#keep-tasks-running-after-claude-exits).
 
 Progress is batched about once a second and capped at 8,000 characters per
 batch. The bridge retains 200 recent events across sessions and up to 64,000
 characters of the latest answer. Truncation and an expired event cursor are
 reported explicitly. The event journal lives only for the current bridge
 process.
+
+## Keep tasks running after Claude exits
+
+Codex can run a shared local app-server daemon. Start it, then start Claude
+with `CODEX_BRIDGE_APP_SERVER=daemon`:
+
+```sh
+codex app-server daemon start
+CODEX_BRIDGE_APP_SERVER=daemon claude
+```
+
+The bridge then connects through `codex app-server proxy` instead of starting
+its own app-server. Its turns run in the daemon:
+
+- Exiting Claude closes only the bridge's connection. Running turns continue.
+- Another Claude session can call `codex_resume` with the `threadId` while the
+  turn is still running, and receives its live progress from then on.
+- `codex agents` lists the daemon's threads, including the bridge's, and can
+  open them.
+
+If the daemon is not running, Codex tools fail with a connection error. Run
+`codex app-server daemon version` to check it and
+`codex app-server daemon stop` to stop it. Starting the daemon also starts a
+Codex updater that installs updates on a schedule and restarts the daemon to
+apply them; the updater keeps running after `daemon stop`. Stopping or
+restarting the daemon can interrupt running turns.
 
 ## Update or uninstall
 
