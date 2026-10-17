@@ -202,15 +202,18 @@ Channels is a research preview. It needs `channelsEnabled` or the development
 channel flag, and it is not documented for the Claude desktop app. The bridge
 can also append every event to a file that Claude follows with its
 [Monitor tool](https://code.claude.com/docs/en/tools-reference#monitor-tool).
-Monitor is not available on Bedrock, Vertex, or Foundry either.
+Monitor is not available on Amazon Bedrock, Google Cloud's Agent Platform, or
+Microsoft Foundry, or when `DISABLE_TELEMETRY` or
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
 
-Set `CODEX_BRIDGE_EVENT_LOG_DIR` to an absolute directory in the `env` block
-of `~/.claude/settings.json`. Claude Code passes it to the plugin's server:
+Set `CODEX_BRIDGE_EVENT_LOG_DIR` to an absolute directory that only you can
+write, in the `env` block of `~/.claude/settings.json`. Claude Code passes it to
+the plugin's server:
 
 ```json
 {
   "env": {
-    "CODEX_BRIDGE_EVENT_LOG_DIR": "/tmp/claude-codex-bridge"
+    "CODEX_BRIDGE_EVENT_LOG_DIR": "/home/you/.cache/claude-codex-bridge"
   }
 }
 ```
@@ -220,23 +223,25 @@ Claude after changing it.
 
 Each bridge process creates its own file in that directory,
 `codex-bridge-<start time>-<pid>.jsonl`, so concurrent Claude sessions never
-share one. The bridge creates the directory if needed. It creates the
-directory and file readable only by you, since events can include command
-output. Each line is one JSON
-event with the same `sequence`, `threadId`, `kind`, `text`, `truncated`, and
-`timestamp` that `codex_events` returns. Channel notifications are still sent.
+share one. The bridge creates the directory and file readable only by you, since
+events can include command output; it refuses a file that already exists at the
+path. Each line is one JSON event with the same `sequence`, `threadId`, `kind`,
+`text`, `truncated`, and `timestamp` that `codex_events` returns. Channel
+notifications are still sent.
 
 The server's instructions give Claude the file path. Claude follows it with
-`tail -n 0 -F <file>` in Monitor. Monitor stops at its deadline; after Claude
-re-arms it, it reads missed events with `codex_events` after the last sequence
-it saw. `codex_status` reports the file as `eventLog`. A failed write does not
-stop the bridge or channel delivery; `codex_status` reports it as
-`eventLogError`.
+`tail -n 0 -F <file>` in Monitor. Monitor stops at its deadline. Before
+re-arming it, Claude checks `codex_status` for a new `eventLog` path, which
+means the bridge restarted. It then reads missed events with `codex_events`
+after the last sequence it saw, or from the file when `codex_events` reports a
+gap. A relative directory or a failed write does not stop the bridge or channel
+delivery; `codex_status` reports it as `eventLogError`.
 
-The bridge never truncates or deletes these files. A file grows for the life of
-its session, by up to about 8 KB per event; progress is written at most once a
-second per running thread. Use a temporary directory or delete files from
-sessions that have ended.
+The bridge never truncates or deletes these files. A file grows by one line per
+event for the life of its session. Event text is capped at 8,000 characters, so
+a line can exceed 8 KB after UTF-8 and JSON escaping. Progress is written at
+most once a second per running thread. Delete files from sessions that have
+ended.
 
 ## Update or uninstall
 
