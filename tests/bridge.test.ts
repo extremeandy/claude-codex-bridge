@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import { AppServer } from "../src/app-server.ts";
-import { Bridge, type BridgeEvent, type TurnSettings } from "../src/bridge.ts";
+import { Bridge, type BridgeEvent, type StartDefaults } from "../src/bridge.ts";
 
 const cleanup: Bridge[] = [];
 const command = [
@@ -21,7 +21,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
-  defaults?: TurnSettings,
+  defaults?: StartDefaults,
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -104,12 +104,28 @@ test("configured defaults apply to new threads that omit model or effort", async
     effort: "low",
   });
   expect(explicit.lastAnswer).toBe("fixture/low");
-  // Resumed threads and later turns keep the thread's own model and effort.
+  const explicitModel = await bridge.start({
+    cwd,
+    prompt: "settings",
+    model: "fixture",
+  });
+  expect(explicitModel.lastAnswer).toBe("fixture/high");
+  // codex_resume sends no defaults, so a saved thread keeps what Codex stored.
   await bridge.resume("saved");
   await bridge.message("saved", "settings");
   expect(bridge.status("saved").sessions[0].lastAnswer).toBe(
     "fixture/undefined",
   );
+});
+
+test("the default effort belongs to the thread, so it outlives a failed first turn", async () => {
+  const { bridge } = fixture(undefined, undefined, 200, { effort: "high" });
+  const error = await bridge
+    .start({ cwd, prompt: "fail" })
+    .catch((error: Error) => error);
+  const threadId = String(/Thread (\S+) started/.exec(String(error))?.[1]);
+  const retried = await bridge.message(threadId, "settings");
+  expect(retried.lastAnswer).toBe("fixture/high");
 });
 
 test("without configured defaults, starts send no model or effort", async () => {

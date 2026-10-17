@@ -170,10 +170,12 @@ there, so the bridge would follow your last choice in the app. To give the
 bridge its own defaults, set `CODEX_BRIDGE_MODEL` and `CODEX_BRIDGE_EFFORT` in
 the environment Claude Code starts from, for example
 `CODEX_BRIDGE_MODEL=gpt-6.1-sol CODEX_BRIDGE_EFFORT=high claude`. They apply
-when `codex_start` omits a model or effort. The bridge sends them as overrides
-for that thread, which never change your Codex config. Unset or empty leaves the
-choice to the Codex config. `codex_resume` does not use them: a resumed thread
-keeps its own last model and effort.
+when `codex_start` omits a model or effort, and the default effort applies
+whatever the model. The bridge sends them as overrides when it creates the
+thread, so they stay the thread's own for later turns and resumes, and never
+change your Codex config. Unset leaves the choice to the Codex config; an empty
+value stops the server from starting. `codex_resume` does not use them: a
+resumed thread keeps its own last model and effort.
 
 ## Available tools
 
@@ -315,7 +317,12 @@ you launch Claude. Restart Claude after installing either tool or changing
 Run `codex login status` and ask Claude to call `codex_models`. Model access is
 controlled by your Codex account. A requested model error is surfaced directly.
 If every `codex_start` fails this way, check `CODEX_BRIDGE_MODEL` and
-`CODEX_BRIDGE_EFFORT`: the bridge passes them to Codex unchecked.
+`CODEX_BRIDGE_EFFORT`: the bridge passes them to Codex unchecked. Codex accepts
+any effort when it creates a thread, so a bad `CODEX_BRIDGE_EFFORT` still
+leaves a thread, and the error names it. Fix the variable and restart Claude,
+or ask Claude to continue that thread with `codex_message` and a valid effort.
+A thread you don't continue stays in your Codex thread list; archive it in
+the Codex app if you don't want it.
 
 ### A task disappeared after restarting Claude
 

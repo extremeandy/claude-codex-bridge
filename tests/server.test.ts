@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
 import { AppServer } from "../src/app-server.ts";
-import type { TurnSettings } from "../src/bridge.ts";
+import type { StartDefaults } from "../src/bridge.ts";
 import { main } from "../src/index.ts";
 import { createServer, defaultsFromEnv } from "../src/server.ts";
 
@@ -31,7 +31,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function connect(defaults: TurnSettings = {}) {
+async function connect(defaults: StartDefaults = {}) {
   const rpc = new AppServer([
     process.execPath,
     resolve(import.meta.dirname, "fixtures/app-server.ts"),
@@ -164,11 +164,17 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
   ).toBe(true);
 });
 
-test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults", async () => {
+test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults and reject empty values", async () => {
   expect(defaultsFromEnv({})).toEqual({});
-  expect(
-    defaultsFromEnv({ CODEX_BRIDGE_MODEL: "", CODEX_BRIDGE_EFFORT: "" }),
-  ).toEqual({});
+  for (const name of ["CODEX_BRIDGE_MODEL", "CODEX_BRIDGE_EFFORT"]) {
+    const rpc = new AppServer([
+      process.execPath,
+      resolve(import.meta.dirname, "fixtures/app-server.ts"),
+    ]);
+    await expect(
+      main(new PassThrough(), new PassThrough(), rpc, { [name]: " " }),
+    ).rejects.toThrow(`${name} must not be empty`);
+  }
   expect(
     defaultsFromEnv({
       CODEX_BRIDGE_MODEL: "fixture-2",
@@ -180,7 +186,7 @@ test("CODEX_BRIDGE_MODEL and CODEX_BRIDGE_EFFORT set codex_start defaults", asyn
     effort: "high",
   });
   const help =
-    "Without model, codex_start uses fixture-2. Without effort, codex_start uses reasoning effort high.";
+    "Without model, codex_start uses fixture-2. Without effort, codex_start uses reasoning effort high, whatever the model.";
   expect(client.getInstructions()).toContain(help);
   const tools = (await client.listTools()).tools;
   expect(
