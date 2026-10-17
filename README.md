@@ -196,6 +196,46 @@ characters of the latest answer. Truncation and an expired event cursor are
 reported explicitly. The event journal lives only for the current bridge
 process.
 
+## Without Channels
+
+Channels is a research preview. It needs `channelsEnabled` or the development
+channel flag, and it is not documented for the Claude desktop app. The bridge
+can also append every event to a file that Claude follows with its
+[Monitor tool](https://code.claude.com/docs/en/tools-reference#monitor-tool).
+Monitor is not available on Bedrock, Vertex, or Foundry either.
+
+Set `CODEX_BRIDGE_EVENT_LOG_DIR` to an absolute directory in the `env` block
+of `~/.claude/settings.json`. Claude Code passes it to the plugin's server:
+
+```json
+{
+  "env": {
+    "CODEX_BRIDGE_EVENT_LOG_DIR": "/tmp/claude-codex-bridge"
+  }
+}
+```
+
+Exporting the variable in the shell that launches `claude` also works. Restart
+Claude after changing it.
+
+Each bridge process creates its own file in that directory,
+`codex-bridge-<start time>-<pid>.jsonl`, so concurrent Claude sessions never
+share one. The bridge creates the directory if needed. Each line is one JSON
+event with the same `sequence`, `threadId`, `kind`, `text`, `truncated`, and
+`timestamp` that `codex_events` returns. Channel notifications are still sent.
+
+The server's instructions give Claude the file path. Claude follows it with
+`tail -n 0 -F <file>` in Monitor. Monitor stops at its deadline; after Claude
+re-arms it, it reads missed events with `codex_events` after the last sequence
+it saw. `codex_status` reports the file as `eventLog`. A failed write does not
+stop the bridge or channel delivery; `codex_status` reports it as
+`eventLogError`.
+
+The bridge never truncates or deletes these files. A file grows for the life of
+its session, by up to about 8 KB per event; progress is written at most once a
+second per running thread. Use a temporary directory or delete files from
+sessions that have ended.
+
 ## Update or uninstall
 
 To install the latest published version:
@@ -265,7 +305,8 @@ publication step.
 
 Tool availability and incoming channel delivery have separate gates. Use
 `codex_status` to confirm the task is running and check Claude's startup notices
-for a channel or organization-policy warning.
+for a channel or organization-policy warning. Where Channels cannot be enabled,
+use the [event log file](#without-channels).
 
 For testing this custom channel, start a session with:
 
