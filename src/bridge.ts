@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import type { ReasoningEffort } from "../.generated/ReasoningEffort.ts";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
+import type { SandboxMode } from "../.generated/v2/SandboxMode.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
 import type { AppServer } from "./app-server.ts";
 
@@ -14,14 +15,35 @@ export type BridgeEvent = {
   truncated: boolean;
   timestamp: string;
 };
+// Ordered from narrowest to widest. `satisfies` makes tsc reject a SandboxMode
+// that Codex adds until it is ranked here.
+export const sandboxRank = {
+  "read-only": 0,
+  "workspace-write": 1,
+  "danger-full-access": 2,
+} satisfies Record<SandboxMode, number>;
+
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type TurnSettings = { model?: string; effort?: ReasoningEffort };
 /** The bridge's own model and effort for codex_start calls that omit them. */
 export type StartDefaults = TurnSettings;
+/**
+ * The operator's settings (CODEX_BRIDGE_*). model and effort are codex_start
+ * defaults. A set sandbox is both the default and the widest mode a caller
+ * may ask for; without one, the default is danger-full-access and any mode is
+ * allowed.
+ */
+export type Configured = StartDefaults & { sandbox?: SandboxMode };
+export type BridgeOptions = {
+  progressMs?: number;
+  journalLimit?: number;
+  configured?: Configured;
+};
 type Session = {
   threadId: string;
   model: string;
   cwd: string;
+  sandbox: SandboxMode;
   status:
     | "idle"
     | "running"
@@ -55,13 +77,22 @@ export class Bridge {
   channelError: string | null = null;
   failure: string | null = null;
 
+  private progressMs: number;
+  private journalLimit: number;
+  private configured: Configured;
+
   constructor(
     private rpc: AppServer,
     private publish: (event: BridgeEvent) => Promise<void>,
-    private progressMs = 1_000,
-    private journalLimit = 200,
-    private defaults: StartDefaults = {},
+    {
+      progressMs = 1_000,
+      journalLimit = 200,
+      configured = {},
+    }: BridgeOptions = {},
   ) {
+    this.progressMs = progressMs;
+    this.journalLimit = journalLimit;
+    this.configured = configured;
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
@@ -88,15 +119,17 @@ export class Bridge {
     model?: string;
     serviceTier?: string;
     effort?: ReasoningEffort;
+    sandbox?: SandboxMode;
   }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
+    const sandbox = this.sandbox(input.sandbox);
     await this.rpc.connect();
-    const effort = input.effort ?? this.defaults.effort;
+    const effort = input.effort ?? this.configured.effort;
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
-      model: input.model ?? this.defaults.model,
+      model: input.model ?? this.configured.model,
       // thread/start has no effort field. As a config override the effort
       // belongs to the thread itself, so later turns and resumes keep it even
       // when the first turn fails.
@@ -105,9 +138,14 @@ export class Bridge {
       serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     return this.lock(session, async () => {
       try {
         await this.begin(session, input.prompt);
@@ -122,18 +160,32 @@ export class Bridge {
     });
   }
 
-  async resume(threadId: string) {
-    if (this.sessions.has(threadId))
-      return this.snapshot(this.session(threadId));
+  async resume(threadId: string, requested?: SandboxMode) {
+    const sandbox = this.sandbox(requested);
+    const attached = this.sessions.get(threadId);
+    if (attached) {
+      // The sandbox is sent only when a thread is attached, so a different
+      // mode for an attached thread would otherwise be silently ignored.
+      if (requested && requested !== attached.sandbox)
+        throw new Error(
+          `Thread is already attached with sandbox ${attached.sandbox}`,
+        );
+      return this.snapshot(attached);
+    }
     await this.rpc.connect();
     // No bridge defaults here: a resumed thread keeps its own last model and effort.
     const result = await this.rpc.call("thread/resume", {
       threadId,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox,
       initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      sandbox,
+    );
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
@@ -230,11 +282,27 @@ export class Bridge {
     };
   }
 
-  private attach(threadId: string, model: string, cwd: string) {
+  private sandbox(requested?: SandboxMode): SandboxMode {
+    const limit = this.configured.sandbox;
+    if (!limit) return requested ?? "danger-full-access";
+    if (requested && sandboxRank[requested] > sandboxRank[limit])
+      throw new Error(
+        `sandbox ${requested} is wider than ${limit}, the maximum set by CODEX_BRIDGE_SANDBOX`,
+      );
+    return requested ?? limit;
+  }
+
+  private attach(
+    threadId: string,
+    model: string,
+    cwd: string,
+    sandbox: SandboxMode,
+  ) {
     const session: Session = {
       threadId,
       model,
       cwd,
+      sandbox,
       status: "idle",
       turnId: null,
       lastTurnId: null,

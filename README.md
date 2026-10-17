@@ -177,6 +177,11 @@ change your Codex config. Unset leaves the choice to the Codex config; an empty
 value stops the server from starting. `codex_resume` does not use them: a
 resumed thread keeps its own last model and effort.
 
+Ask for a `read-only` or `workspace-write` sandbox to restrict a thread:
+
+> Start Codex with a read-only sandbox in /absolute/path/to/my-project and
+> review the authentication code.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |
@@ -204,10 +209,28 @@ turn. A successful notification write does not confirm that Claude has read it.
 Codex sessions appear through tools and messages, not as native Claude agents
 in its subagent panel.
 
-**Codex runs with `danger-full-access` and `approvalPolicy: never`.** It can
-modify files and run commands with the permissions of your local user without
-requesting approval. Claude's tool permissions do not sandbox Codex. Choose the
-project directory and tasks with that execution mode in mind.
+**By default, Codex runs with `danger-full-access` and `approvalPolicy: never`.**
+It can modify files and run commands with the permissions of your local user
+without requesting approval. Claude's tool permissions do not sandbox Codex.
+Choose the project directory and tasks with that execution mode in mind.
+
+`codex_start` and `codex_resume` accept an optional `sandbox` of `read-only`,
+`workspace-write`, or `danger-full-access`. The approval policy stays `never`,
+and the bridge rejects approval requests, so a command that needs more than the
+sandbox allows fails instead of asking.
+
+To limit Codex regardless of what Claude asks for, set `CODEX_BRIDGE_SANDBOX`
+to one of those modes in the environment Claude Code starts from, for example
+`CODEX_BRIDGE_SANDBOX=workspace-write claude`. That mode becomes both the
+default and the widest allowed: the bridge refuses a `sandbox` wider than it
+(`read-only` < `workspace-write` < `danger-full-access`) and accepts a narrower
+one. The bridge refuses to start when the variable is set to an empty or
+unknown value.
+
+A thread keeps its sandbox while the bridge has it attached, and `codex_resume`
+with a different `sandbox` is an error. The bridge does not save a thread's
+sandbox, so after the bridge restarts, `codex_resume` without `sandbox` uses
+the default, not the mode the thread started with.
 
 The plugin uses Codex's existing authentication and configuration. It adds no
 API proxy, model impersonation, interception hook, or global timeout override.

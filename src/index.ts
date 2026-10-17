@@ -2,7 +2,7 @@
 import type { Readable, Writable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AppServer } from "./app-server.ts";
-import { createServer, defaultsFromEnv } from "./server.ts";
+import { configFromEnv, createServer } from "./server.ts";
 
 export async function main(
   input: Readable = process.stdin,
@@ -10,7 +10,7 @@ export async function main(
   rpc = new AppServer(),
   env: NodeJS.ProcessEnv = process.env,
 ) {
-  const { server, bridge } = createServer(rpc, undefined, defaultsFromEnv(env));
+  const { server, bridge } = createServer(rpc, configFromEnv(env));
   let closing: Promise<void> | undefined;
   const shutdown = () => {
     closing ??= (async () => {

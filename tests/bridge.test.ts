@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import { AppServer } from "../src/app-server.ts";
-import { Bridge, type BridgeEvent, type StartDefaults } from "../src/bridge.ts";
+import { Bridge, type BridgeEvent, type Configured } from "../src/bridge.ts";
 
 const cleanup: Bridge[] = [];
 const command = [
@@ -21,7 +21,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
-  defaults?: StartDefaults,
+  configured?: Configured,
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -34,9 +34,7 @@ function fixture(
       (async (event) => {
         events.push(event);
       }),
-    10,
-    limit,
-    defaults,
+    { progressMs: 10, journalLimit: limit, configured },
   );
   cleanup.push(bridge);
   return { bridge, rpc, events };
@@ -334,6 +332,63 @@ test("resume attaches saved history and active turn IDs; model catalog supports 
   expect((await bridge.resume("paged")).lastAnswer).toBe("page answer");
   expect(bridge.status("active").sessions[0].turnId).toBe("resumed-turn");
   expect((await bridge.message("active", "hello")).mode).toBe("steered");
+});
+
+test("the sandbox defaults to danger-full-access and an explicit mode reaches Codex on start and resume", async () => {
+  const { bridge } = fixture();
+  const full = await bridge.start({ cwd, prompt: "sandbox" });
+  expect(full.sandbox).toBe("danger-full-access");
+  expect(full.lastAnswer).toBe("danger-full-access");
+  const readOnly = await bridge.start({
+    cwd,
+    prompt: "sandbox",
+    sandbox: "read-only",
+  });
+  expect(readOnly.sandbox).toBe("read-only");
+  expect(readOnly.lastAnswer).toBe("read-only");
+  expect((await bridge.resume("saved")).sandbox).toBe("danger-full-access");
+  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
+    "workspace-write",
+  );
+  await bridge.message("workspace", "sandbox");
+  expect(bridge.status("workspace").sessions[0].lastAnswer).toBe(
+    "workspace-write",
+  );
+  expect((await bridge.resume("workspace")).sandbox).toBe("workspace-write");
+  expect((await bridge.resume("workspace", "workspace-write")).sandbox).toBe(
+    "workspace-write",
+  );
+  await expect(
+    bridge.resume("workspace", "danger-full-access"),
+  ).rejects.toThrow("already attached with sandbox workspace-write");
+});
+
+test("a sandbox limit is the default for starts and resumes and refuses wider modes", async () => {
+  const { bridge } = fixture(undefined, undefined, 200, {
+    sandbox: "workspace-write",
+  });
+  const started = await bridge.start({ cwd, prompt: "sandbox" });
+  expect(started.sandbox).toBe("workspace-write");
+  expect(started.lastAnswer).toBe("workspace-write");
+  expect(
+    (await bridge.start({ cwd, prompt: "sandbox", sandbox: "read-only" }))
+      .lastAnswer,
+  ).toBe("read-only");
+  await expect(
+    bridge.start({ cwd, prompt: "sandbox", sandbox: "danger-full-access" }),
+  ).rejects.toThrow(
+    "sandbox danger-full-access is wider than workspace-write, the maximum set by CODEX_BRIDGE_SANDBOX",
+  );
+  expect((await bridge.resume("saved")).sandbox).toBe("workspace-write");
+  await bridge.message("saved", "sandbox");
+  expect(bridge.status("saved").sessions[0].lastAnswer).toBe("workspace-write");
+  await expect(bridge.resume("other", "danger-full-access")).rejects.toThrow(
+    "wider than workspace-write",
+  );
+  expect(() => bridge.status("other")).toThrow("Unknown thread");
+  expect((await bridge.resume("narrow", "read-only")).sandbox).toBe(
+    "read-only",
+  );
 });
 
 test("bounded journal signals eviction and oversized final answers signal truncation", async () => {

@@ -10,8 +10,10 @@ const threads = new Map<
     cwd: string;
     turnId: string;
     prompt: string;
+    sandbox: string;
   }
 >();
+const sandboxes = ["read-only", "workspace-write", "danger-full-access"];
 let sequence = 0;
 const send = (message: object) =>
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -75,7 +77,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       if (
         params.approvalPolicy !== "never" ||
-        params.sandbox !== "danger-full-access" ||
+        !sandboxes.includes(params.sandbox) ||
         params.allowProviderModelFallback !== false
       )
         throw new Error("Wrong permissions or model fallback");
@@ -87,6 +89,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         cwd: params.cwd,
         turnId: "",
         prompt: "",
+        sandbox: params.sandbox,
       };
       threads.set(threadId, thread);
       notify("thread/started", { thread: { id: threadId } });
@@ -96,11 +99,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/resume": {
       if (params.initialTurnsPage?.itemsView !== "full")
         throw new Error("Resume needs full recent items");
+      if (
+        params.approvalPolicy !== "never" ||
+        !sandboxes.includes(params.sandbox)
+      )
+        throw new Error("Wrong permissions");
       const thread = {
         model: "fixture",
         cwd: process.cwd(),
         turnId: params.threadId === "active" ? "resumed-turn" : "",
         prompt: "",
+        sandbox: params.sandbox,
       };
       threads.set(params.threadId, thread);
       reply({
@@ -185,6 +194,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           "completed",
           `${thread.model}/${thread.effort}`,
         );
+      if (prompt === "sandbox")
+        finish(params.threadId, "completed", thread.sandbox);
       if (prompt === "failed") {
         notify("error", {
           threadId: params.threadId,
@@ -229,7 +240,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           method: "item/permissions/requestApproval",
           params: { threadId: params.threadId },
         });
-      } else if (!["instant", "settings", "failed", "long"].includes(prompt)) {
+      } else if (
+        !["instant", "settings", "sandbox", "failed", "long"].includes(prompt)
+      ) {
         setTimeout(() => {
           notify("item/started", {
             threadId: params.threadId,
