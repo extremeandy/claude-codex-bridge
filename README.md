@@ -159,12 +159,13 @@ The plugin ships an opt-in output style, `codex-relay`, that makes Claude a thin
 relay to Codex. Claude sends each task to one persistent Codex thread with the
 context Codex needs, reports progress, and passes Codex's answers through close
 to verbatim. Codex does the reading, reasoning, and editing. Claude still steers
-or stops the running turn when you ask, and brings Codex's questions and
-approval requests to you rather than deciding them itself.
+or stops the running turn when you ask, and brings Codex's questions to you
+rather than answering them itself.
 
 Select it in the terminal with `/output-style claude-codex-bridge:codex-relay`,
-or from `/config` under **Output style**. The desktop app has no output style
-menu, so set it in a settings file there:
+or from `/config` under **Output style**. Claude follows the style from your
+next message. The desktop app has no output style menu, so set it in a settings
+file there:
 
 ```json
 {
@@ -173,13 +174,14 @@ menu, so set it in a settings file there:
 ```
 
 Use `.claude/settings.local.json` for one project or `~/.claude/settings.json`
-for every project. The value is case-sensitive. Claude follows the style from
-your next message.
+for every project. The value is case-sensitive. After editing a settings file,
+or right after installing the plugin, start a new session to pick up the style.
 
-The style drops Claude Code's built-in coding instructions, since Codex does the
-coding. Codex does the heavy work, so run the relay session on a cheaper Claude
-model such as Sonnet: start it with `claude --model sonnet` or switch with
-`/model sonnet`.
+The style leaves out Claude Code's built-in software engineering instructions
+where Claude Code uses its full system prompt; its shorter system prompt never
+includes them. Since Codex does the coding, run the relay session on a cheaper
+Claude model such as Sonnet: start it with `claude --model sonnet` or switch
+with `/model sonnet`.
 
 ## Available tools
 
