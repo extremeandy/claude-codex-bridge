@@ -58,8 +58,11 @@ const definitions = {
   },
   codex_events: {
     description:
-      "Read the bounded event journal after a sequence number. gap means events were missed: older ones were evicted, or after came from an earlier bridge process. Use to recover results if channel delivery is unavailable; do not busy-poll.",
-    schema: z.object({ after: z.number().int().nonnegative().optional() }),
+      "Read the bounded event journal after a sequence number, oldest first. For Codex's latest answer, read lastAnswer from codex_status instead; use this only for events after the last sequence you have seen. Each call returns at most limit events (default 50) and about 20,000 characters of event text; more means further events remain, so call again with after set to the last returned sequence. gap means events were missed: older ones were evicted, or after came from an earlier bridge process. Use to recover results if channel delivery is unavailable; do not busy-poll.",
+    schema: z.object({
+      after: z.number().int().nonnegative().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
   },
 };
 
@@ -159,11 +162,11 @@ export function createServer(
             definitions.codex_status.schema.parse(args).threadId,
           );
           break;
-        case "codex_events":
-          result = bridge.events(
-            definitions.codex_events.schema.parse(args).after,
-          );
+        case "codex_events": {
+          const input = definitions.codex_events.schema.parse(args);
+          result = bridge.events(input.after, input.limit);
           break;
+        }
         default:
           throw new Error(`Unknown tool: ${params.name}`);
       }
@@ -184,7 +187,20 @@ export function createServer(
   return { server, bridge };
 }
 
+// Each log line is JSON.stringify of an event, so "kind":"x" can only match the
+// kind field: quotes inside string values are escaped.
+const relayedKinds = [
+  "started",
+  "message",
+  "question",
+  "completed",
+  "interrupted",
+  "failed",
+  "error",
+  "unavailable",
+];
+
 function eventLogInstructions(path: string) {
   const quoted = `'${path.replaceAll("'", "'\\''")}'`;
-  return `Every event is also appended to ${quoted} as one JSON line with the same sequence, threadId, kind, text, truncated and timestamp as codex_events. If channel events do not arrive in this session, follow that file with the Monitor tool, for example tail -n 0 -F ${quoted}. Monitor stops at its deadline: re-arm it while Codex work is running. Before each re-arm, call codex_status: if its eventLog is not the file you followed, the bridge restarted, so follow the new file and reset your cursor to 0. After arming, call codex_events with after set to the last sequence you saw to fill the gap; if it reports gap, read the lines with a higher sequence from the file itself. Stop monitoring once the Codex work you follow has finished.`;
+  return `Every event is also appended to ${quoted} as one JSON line with the same sequence, threadId, kind, text, truncated and timestamp as codex_events. If channel events do not arrive in this session, follow the events worth relaying with the Monitor tool: tail -n 0 -F ${quoted} | grep --line-buffered -E '"kind":"(${relayedKinds.join("|")})"'. The filter leaves out progress and activity lines, which can be large and would each wake you. Monitor stops at its deadline: re-arm it while Codex work is running. Before each re-arm, call codex_status: if its eventLog is not the file you followed, the bridge restarted, so follow the new file and reset your cursor to 0. After arming, call codex_events with after set to the last sequence you saw to fill the gap; if it reports gap, read the lines with a higher sequence from the file itself. Stop monitoring once the Codex work you follow has finished.`;
 }

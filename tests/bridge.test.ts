@@ -251,6 +251,54 @@ test("bounded journal signals eviction and oversized final answers signal trunca
   expect(bridge.events(journal.latestSequence).gap).toBe(false);
 });
 
+test("events page oldest first, 50 at a time by default", async () => {
+  const { bridge, events: all } = fixture();
+  const completed = () => all.filter((event) => event.kind === "completed");
+  const { threadId } = await bridge.start({ cwd, prompt: "instant" });
+  for (let turn = 1; turn < 25; turn++) {
+    await until(() => completed().length === turn);
+    await bridge.message(threadId, "instant");
+  }
+  await until(() => completed().length === 25);
+  expect(all.length).toBeGreaterThan(70);
+  const first = bridge.events();
+  expect(first.events).toEqual(all.slice(0, 50));
+  expect(first).toMatchObject({ more: true, gap: false });
+  const after = first.events.at(-1)?.sequence ?? 0;
+  const second = bridge.events(after, 10);
+  expect(second.events).toEqual(all.slice(50, 60));
+  expect(second.more).toBe(true);
+  const rest = bridge.events(second.events.at(-1)?.sequence);
+  expect(rest.events).toEqual(all.slice(60));
+  expect(rest).toMatchObject({
+    more: false,
+    gap: false,
+    latestSequence: all.at(-1)?.sequence,
+  });
+});
+
+test("events stop early at the text budget", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "long" });
+  for (let turn = 1; turn < 3; turn++) {
+    await until(
+      () => bridge.status(threadId).sessions[0].status === "completed",
+    );
+    await bridge.message(threadId, "long");
+  }
+  await until(() => bridge.status(threadId).sessions[0].status === "completed");
+  const page = bridge.events();
+  const size = page.events.reduce((sum, event) => sum + event.text.length, 0);
+  expect(size).toBeLessThanOrEqual(20_000);
+  expect(page.events.filter((event) => event.kind === "message").length).toBe(
+    2,
+  );
+  expect(page.more).toBe(true);
+  const rest = bridge.events(page.events.at(-1)?.sequence);
+  expect(rest.events[0].kind).toBe("message");
+  expect(rest.more).toBe(false);
+});
+
 test("notification write failure retains the journal for recovery", async () => {
   const { bridge } = fixture(undefined, async () => {
     throw new Error("channel disconnected");
@@ -308,6 +356,7 @@ test("a cursor from an earlier bridge process reports a gap", async () => {
   const { latestSequence } = bridge.events();
   expect(bridge.events(latestSequence + 1)).toEqual({
     events: [],
+    more: false,
     latestSequence,
     gap: true,
   });

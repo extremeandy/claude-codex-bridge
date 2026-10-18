@@ -229,8 +229,12 @@ path. Each line is one JSON event with the same `sequence`, `threadId`, `kind`,
 `text`, `truncated`, and `timestamp` that `codex_events` returns. Channel
 notifications are still sent.
 
-The server's instructions give Claude the file path. Claude follows it with
-`tail -n 0 -F <file>` in Monitor. Monitor stops at its deadline. Before
+The server's instructions give Claude the file path and a Monitor command that
+pipes `tail -n 0 -F <file>` through `grep --line-buffered`. It keeps only lines
+whose `kind` is `started`, `message`, `question`, `completed`, `interrupted`,
+`failed`, `error`, or `unavailable`. Each line Monitor sees wakes Claude, so the
+filter leaves out `progress`, `activity`, and `activity_completed` lines, which
+can hold command output and diffs. Monitor stops at its deadline. Before
 re-arming it, Claude checks `codex_status` for a new `eventLog` path, which
 means the bridge restarted. It then reads missed events with `codex_events`
 after the last sequence it saw, or from the file when `codex_events` reports a

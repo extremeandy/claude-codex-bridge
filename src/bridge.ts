@@ -14,6 +14,8 @@ export type BridgeEvent = {
   truncated: boolean;
   timestamp: string;
 };
+// Activity events carry whole item JSON, so an unbounded read can be very large.
+const eventsTextBudget = 20_000;
 type Question = { requestId: string; params: ToolRequestUserInputParams };
 type Session = {
   threadId: string;
@@ -212,10 +214,21 @@ export class Bridge {
     };
   }
 
-  events(after = 0) {
+  events(after = 0, limit = 50) {
     const oldest = this.journal[0]?.sequence ?? this.sequence + 1;
+    const pending = this.journal.filter((event) => event.sequence > after);
+    const events: BridgeEvent[] = [];
+    let size = 0;
+    for (const event of pending.slice(0, limit)) {
+      size += event.text.length;
+      // Always return one event so paging advances.
+      if (size > eventsTextBudget && events.length > 0) break;
+      events.push(event);
+    }
     return {
-      events: this.journal.filter((event) => event.sequence > after),
+      events,
+      // Page with after set to the last returned sequence.
+      more: events.length < pending.length,
       latestSequence: this.sequence,
       // A cursor past latestSequence came from an earlier bridge process.
       gap: after < oldest - 1 || after > this.sequence,

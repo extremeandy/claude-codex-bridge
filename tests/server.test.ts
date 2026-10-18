@@ -139,16 +139,33 @@ test("an event log directory gets a per-process file named in the instructions a
   const [file] = readdirSync(join(directory, "logs"));
   expect(file).toMatch(new RegExp(`^codex-bridge-.*-${process.pid}\\.jsonl$`));
   const eventLog = join(directory, "logs", file);
-  expect(client.getInstructions()).toContain(`tail -n 0 -F '${eventLog}'`);
+  const pattern =
+    '"kind":"(started|message|question|completed|interrupted|failed|error|unavailable)"';
+  expect(client.getInstructions()).toContain(
+    `tail -n 0 -F '${eventLog}' | grep --line-buffered -E '${pattern}'`,
+  );
   expect(await call("codex_status")).toMatchObject({
     eventLog,
     eventLogError: null,
   });
-  await call("codex_start", { cwd: process.cwd(), prompt: "instant" });
+  const { threadId } = await call("codex_start", {
+    cwd: process.cwd(),
+    prompt: "work",
+  });
+  await sleep(30);
+  await call("codex_stop", { threadId });
   await sleep(10);
   const lines = readFileSync(eventLog, "utf8").trimEnd().split("\n");
   expect(lines.map((line) => JSON.parse(line).sequence)).toEqual(
     events.map((event) => Number(event.meta.sequence)),
+  );
+  // The grep -E pattern is also a valid JavaScript RegExp.
+  const filter = new RegExp(pattern);
+  const quiet = ["progress", "activity", "activity_completed"];
+  const kinds = lines.map((line) => JSON.parse(line).kind);
+  expect(kinds).toEqual(expect.arrayContaining(quiet));
+  expect(lines.filter((line) => filter.test(line))).toEqual(
+    lines.filter((line) => !quiet.includes(JSON.parse(line).kind)),
   );
 });
 
