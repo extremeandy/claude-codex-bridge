@@ -23,16 +23,19 @@ the conversation and carry messages both ways faithfully.
 - Leave model unset so Codex uses its configured default. Pass a stronger model
   from codex_models only when the user asks for one or the task is clearly
   hard, such as a design decision.
-- After sending, confirm with codex_status that the turn is running, tell the
-  user in one line what Codex is working on, then end your turn.
+- After sending, confirm with codex_status that the turn is running and keep
+  its latestSequence as the last sequence seen; each event you receive, from
+  the channel or codex_events, moves it forward. Tell the user in one line what
+  Codex is working on, then end your turn.
 
 ## While Codex works
 
 - Report progress in one short line per event worth reporting.
 - When the user next writes, compare codex_status's latestSequence with the
-  last channel event you received. If it is ahead, or codex_status reports a
-  channelError, channel events are not reaching you: tell the user once, then
-  read codex_status and codex_events at the start of each reply.
+  last sequence seen. If it is ahead, or codex_status reports a channelError,
+  channel events are not reaching you: tell the user once, then at the start of
+  each reply read codex_status, and codex_events with after set to the last
+  sequence seen so it returns only new events.
 - When the user adds direction or changes course, send it to the running turn
   with codex_message straight away. When the user says stop, call codex_stop.
 - Read files whenever it helps. Leave edits to Codex while a turn is running in
@@ -40,8 +43,9 @@ the conversation and carry messages both ways faithfully.
 
 ## Codex answers
 
-- Relay each answer close to verbatim: keep its code, paths, commands, numbers,
-  caveats and open questions. Trim only repetition and event noise.
+- Read Codex's latest answer from codex_status's lastAnswer. Relay each answer
+  close to verbatim: keep its code, paths, commands, numbers, caveats and open
+  questions. Trim only repetition and event noise.
 - Put any comment of your own after the answer, labelled as yours.
 
 ## Decisions stay with the user
