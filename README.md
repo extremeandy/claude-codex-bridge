@@ -196,6 +196,57 @@ characters of the latest answer. Truncation and an expired event cursor are
 reported explicitly. The event journal lives only for the current bridge
 process.
 
+## Without Channels
+
+Channels is a research preview. It needs `channelsEnabled` or the development
+channel flag, and it is not documented for the Claude desktop app. The bridge
+can also append every event to a file that Claude follows with its
+[Monitor tool](https://code.claude.com/docs/en/tools-reference#monitor-tool).
+Monitor is not available on Amazon Bedrock, Google Cloud's Agent Platform, or
+Microsoft Foundry, or when `DISABLE_TELEMETRY` or
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set.
+
+Set `CODEX_BRIDGE_EVENT_LOG_DIR` to an absolute directory that only you can
+write, in the `env` block of `~/.claude/settings.json`. Claude Code passes it to
+the plugin's server:
+
+```json
+{
+  "env": {
+    "CODEX_BRIDGE_EVENT_LOG_DIR": "/home/you/.cache/claude-codex-bridge"
+  }
+}
+```
+
+Exporting the variable in the shell that launches `claude` also works. Restart
+Claude after changing it.
+
+Each bridge process creates its own file in that directory,
+`codex-bridge-<start time>-<pid>.jsonl`, so concurrent Claude sessions never
+share one. The bridge creates the directory and file readable only by you, since
+events can include command output; it refuses a file that already exists at the
+path. Each line is one JSON event with the same `sequence`, `threadId`, `kind`,
+`text`, `truncated`, and `timestamp` that `codex_events` returns. Channel
+notifications are still sent.
+
+The server's instructions give Claude the file path and a Monitor command that
+pipes `tail -n 0 -F <file>` through `grep --line-buffered`. It keeps only lines
+whose `kind` is `started`, `message`, `question`, `completed`, `interrupted`,
+`failed`, `error`, or `unavailable`. Each line Monitor sees wakes Claude, so the
+filter leaves out `progress`, `activity`, and `activity_completed` lines, which
+can hold command output and diffs. Monitor stops at its deadline. Before
+re-arming it, Claude checks `codex_status` for a new `eventLog` path, which
+means the bridge restarted. It then reads missed events with `codex_events`
+after the last sequence it saw, or from the file when `codex_events` reports a
+gap. A relative directory or a failed write does not stop the bridge or channel
+delivery; `codex_status` reports it as `eventLogError`.
+
+The bridge never truncates or deletes these files. A file grows by one line per
+event for the life of its session. Event text is capped at 8,000 characters, so
+a line can exceed 8 KB after UTF-8 and JSON escaping. Progress is written at
+most once a second per running thread. Delete files from sessions that have
+ended.
+
 ## Update or uninstall
 
 To install the latest published version:
@@ -265,7 +316,8 @@ publication step.
 
 Tool availability and incoming channel delivery have separate gates. Use
 `codex_status` to confirm the task is running and check Claude's startup notices
-for a channel or organization-policy warning.
+for a channel or organization-policy warning. Where Channels cannot be enabled,
+use the [event log file](#without-channels).
 
 For testing this custom channel, start a session with:
 

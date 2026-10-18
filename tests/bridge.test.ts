@@ -1,10 +1,14 @@
-import { resolve } from "node:path";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test } from "vitest";
 import { AppServer } from "../src/app-server.ts";
 import { Bridge, type BridgeEvent } from "../src/bridge.ts";
 
 const cleanup: Bridge[] = [];
+const directories: string[] = [];
 const command = [
   process.execPath,
   resolve(import.meta.dirname, "fixtures/app-server.ts"),
@@ -21,6 +25,7 @@ function fixture(
   mode?: string,
   publish?: (event: BridgeEvent) => Promise<void>,
   limit = 200,
+  eventLog?: string,
 ) {
   const events: BridgeEvent[] = [];
   const rpc = new AppServer(
@@ -35,13 +40,21 @@ function fixture(
       }),
     10,
     limit,
+    eventLog,
   );
   cleanup.push(bridge);
   return { bridge, rpc, events };
 }
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((bridge) => bridge.close()));
+  for (const directory of directories.splice(0))
+    await rm(directory, { recursive: true, force: true });
 });
+async function temporaryDirectory() {
+  const directory = await mkdtemp(join(tmpdir(), "codex-bridge-log-"));
+  directories.push(directory);
+  return directory;
+}
 
 test("acceptance returns while Codex runs; progress arrives and steering affects that turn", async () => {
   const { bridge, events } = fixture();
@@ -238,6 +251,54 @@ test("bounded journal signals eviction and oversized final answers signal trunca
   expect(bridge.events(journal.latestSequence).gap).toBe(false);
 });
 
+test("events page oldest first, 50 at a time by default", async () => {
+  const { bridge, events: all } = fixture();
+  const completed = () => all.filter((event) => event.kind === "completed");
+  const { threadId } = await bridge.start({ cwd, prompt: "instant" });
+  for (let turn = 1; turn < 25; turn++) {
+    await until(() => completed().length === turn);
+    await bridge.message(threadId, "instant");
+  }
+  await until(() => completed().length === 25);
+  expect(all.length).toBeGreaterThan(70);
+  const first = bridge.events();
+  expect(first.events).toEqual(all.slice(0, 50));
+  expect(first).toMatchObject({ more: true, gap: false });
+  const after = first.events.at(-1)?.sequence ?? 0;
+  const second = bridge.events(after, 10);
+  expect(second.events).toEqual(all.slice(50, 60));
+  expect(second.more).toBe(true);
+  const rest = bridge.events(second.events.at(-1)?.sequence);
+  expect(rest.events).toEqual(all.slice(60));
+  expect(rest).toMatchObject({
+    more: false,
+    gap: false,
+    latestSequence: all.at(-1)?.sequence,
+  });
+});
+
+test("events stop early at the text budget", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "long" });
+  for (let turn = 1; turn < 3; turn++) {
+    await until(
+      () => bridge.status(threadId).sessions[0].status === "completed",
+    );
+    await bridge.message(threadId, "long");
+  }
+  await until(() => bridge.status(threadId).sessions[0].status === "completed");
+  const page = bridge.events();
+  const size = page.events.reduce((sum, event) => sum + event.text.length, 0);
+  expect(size).toBeLessThanOrEqual(20_000);
+  expect(page.events.filter((event) => event.kind === "message").length).toBe(
+    2,
+  );
+  expect(page.more).toBe(true);
+  const rest = bridge.events(page.events.at(-1)?.sequence);
+  expect(rest.events[0].kind).toBe("message");
+  expect(rest.more).toBe(false);
+});
+
 test("notification write failure retains the journal for recovery", async () => {
   const { bridge } = fixture(undefined, async () => {
     throw new Error("channel disconnected");
@@ -246,6 +307,69 @@ test("notification write failure retains the journal for recovery", async () => 
   await until(() => bridge.channelError !== null);
   expect(bridge.status().channelError).toContain("channel disconnected");
   expect(bridge.events().events.at(-1)?.kind).toBe("completed");
+});
+
+test("event log mirrors the journal as one JSON line per event", async () => {
+  const directory = await temporaryDirectory();
+  const eventLog = join(directory, "nested", "events.jsonl");
+  const { bridge, events } = fixture(undefined, undefined, 200, eventLog);
+  expect(readFileSync(eventLog, "utf8")).toBe("");
+  expect(statSync(join(directory, "nested")).mode & 0o777).toBe(0o700);
+  expect(statSync(eventLog).mode & 0o777).toBe(0o600);
+  const session = await bridge.start({ cwd, prompt: "work" });
+  await bridge.message(session.threadId, "first line\nsecond line");
+  await until(() => events.some((event) => event.kind === "completed"));
+  expect(events.some((event) => event.text.includes("\n"))).toBe(true);
+  const lines = readFileSync(eventLog, "utf8").split("\n");
+  expect(lines.pop()).toBe("");
+  expect(lines.map((line) => JSON.parse(line))).toEqual(bridge.events().events);
+  expect(events).toEqual(bridge.events().events);
+  expect(bridge.status()).toMatchObject({ eventLog, eventLogError: null });
+});
+
+test("event log refuses a file already at its path and the bridge keeps working", async () => {
+  const directory = await temporaryDirectory();
+  const eventLog = join(directory, "events.jsonl");
+  writeFileSync(eventLog, "planted\n");
+  const { bridge, events } = fixture(undefined, undefined, 200, eventLog);
+  await bridge.start({ cwd, prompt: "instant" });
+  await until(() => events.some((event) => event.kind === "completed"));
+  expect(readFileSync(eventLog, "utf8")).toBe("planted\n");
+  expect(bridge.status()).toMatchObject({
+    eventLog,
+    eventLogError: expect.stringContaining("EEXIST"),
+    channelError: null,
+  });
+});
+
+test("event log refuses a relative path", () => {
+  const { bridge } = fixture(undefined, undefined, 200, "logs/events.jsonl");
+  expect(bridge.status().eventLogError).toContain(
+    "event log directory must be absolute: logs",
+  );
+});
+
+test("a cursor from an earlier bridge process reports a gap", async () => {
+  const { bridge, events } = fixture();
+  await bridge.start({ cwd, prompt: "instant" });
+  await until(() => events.some((event) => event.kind === "completed"));
+  const { latestSequence } = bridge.events();
+  expect(bridge.events(latestSequence + 1)).toEqual({
+    events: [],
+    more: false,
+    latestSequence,
+    gap: true,
+  });
+});
+
+test("without an event log, status keeps its original fields", () => {
+  const { bridge } = fixture();
+  expect(Object.keys(bridge.status())).toEqual([
+    "sessions",
+    "failure",
+    "channelError",
+    "latestSequence",
+  ]);
 });
 
 test("process death makes existing sessions unavailable and rejects later control calls", async () => {
