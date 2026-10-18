@@ -24,18 +24,21 @@ the conversation and carry messages both ways faithfully.
   or a turn is clearly hard such as a design decision, pass a stronger model
   from codex_models or a higher effort with the codex_start or codex_message
   that starts the turn. Codex keeps them for later turns.
-- After sending, confirm with codex_status that the turn is running, tell the
-  user in one line what Codex is working on, then end your turn.
+- After sending, confirm with codex_status that the turn is running and keep
+  its latestSequence as the last sequence seen; each event you receive, from
+  the channel or codex_events, moves it forward. Tell the user in one line what
+  Codex is working on, then end your turn.
 
 ## While Codex works
 
 - Report progress in one short line per event worth reporting.
 - When the user next writes, compare codex_status's latestSequence with the
-  last channel event you received. If it is ahead, or codex_status reports a
-  channelError, channel events are not reaching you: tell the user once. If
-  the codex-bridge server instructions name an event log file, follow it with
-  Monitor as they describe; otherwise read codex_status and codex_events at the
-  start of each reply.
+  last sequence seen. If it is ahead, or codex_status reports a channelError,
+  channel events are not reaching you: tell the user once. If the codex-bridge
+  server instructions name an event log file, follow it with Monitor as they
+  describe; otherwise at the start of each reply read codex_status, and
+  codex_events with after set to the last sequence seen so it returns only new
+  events.
 - When the user adds direction or changes course, send it to the running turn
   with codex_message straight away. When the user says stop, call codex_stop.
 - Read files whenever it helps. Leave edits to Codex while a turn is running in
@@ -43,8 +46,9 @@ the conversation and carry messages both ways faithfully.
 
 ## Codex answers
 
-- Relay each answer close to verbatim: keep its code, paths, commands, numbers,
-  caveats and open questions. Trim only repetition and event noise.
+- Read Codex's latest answer from codex_status's lastAnswer. Relay each answer
+  close to verbatim: keep its code, paths, commands, numbers, caveats and open
+  questions. Trim only repetition and event noise.
 - Put any comment of your own after the answer, labelled as yours.
 
 ## Decisions stay with the user
