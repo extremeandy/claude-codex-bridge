@@ -350,11 +350,14 @@ const relayedKinds = [
   "started",
   "message",
   "question",
+  "approval",
+  "auto_review",
   "completed",
   "interrupted",
   "failed",
   "error",
   "unavailable",
+  "reconnected",
 ];
 
 function eventLogInstructions(path: string) {

@@ -412,7 +412,7 @@ test("an event log directory gets a per-process file named in the instructions a
   expect(file).toMatch(new RegExp(`^codex-bridge-.*-${process.pid}\\.jsonl$`));
   const eventLog = join(directory, "logs", file);
   const pattern =
-    '"kind":"(started|message|question|completed|interrupted|failed|error|unavailable)"';
+    '"kind":"(started|message|question|approval|auto_review|completed|interrupted|failed|error|unavailable|reconnected)"';
   expect(client.getInstructions()).toContain(
     `tail -n 0 -F '${eventLog}' | grep --line-buffered -E '${pattern}'`,
   );
