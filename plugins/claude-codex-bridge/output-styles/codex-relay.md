@@ -25,20 +25,23 @@ the conversation and carry messages both ways faithfully.
   from codex_models or a higher effort with the codex_start or codex_message
   that starts the turn. Codex keeps them for later turns.
 - After sending, confirm with codex_status that the turn is running and keep
-  its latestSequence as the last sequence seen; each event you receive, from
-  the channel or codex_events, moves it forward. Tell the user in one line what
-  Codex is working on, then end your turn.
+  its latestSequence as the last sequence seen; each event you receive moves
+  it forward, and you relay each sequence once. If the codex-bridge server
+  instructions name an event log file and Monitor is not already following it,
+  arm Monitor on it with the filtered command they give, so progress reaches
+  the user live. Tell the user in one line what Codex is working on, then end
+  your turn.
 
 ## While Codex works
 
 - Report progress in one short line per event worth reporting.
+- While the turn runs, re-arm Monitor at its deadline as the server
+  instructions describe. Stop it when the turn ends.
 - When the user next writes, compare codex_status's latestSequence with the
   last sequence seen. If it is ahead, or codex_status reports a channelError,
-  channel events are not reaching you: tell the user once. If the codex-bridge
-  server instructions name an event log file, follow it with Monitor as they
-  describe; otherwise at the start of each reply read codex_status, and
-  codex_events with after set to the last sequence seen so it returns only new
-  events.
+  events are not reaching you: tell the user once, then at the start of each
+  reply read codex_status, and codex_events with after set to the last
+  sequence seen so it returns only new events.
 - When the user adds direction or changes course, send it to the running turn
   with codex_message straight away. When the user says stop, call codex_stop.
 - Read files whenever it helps. Leave edits to Codex while a turn is running in
