@@ -35,8 +35,10 @@ the conversation and carry messages both ways faithfully.
   sequence once, whichever path brought it.
 - Loop codex_wait from the last sequence seen, moving it to each result's
   latestSequence:
-  - Post each `message` event's text as your reply text, verbatim: Codex's
-    words exactly, with no paraphrase or summary.
+  - The user never sees tool results, only your reply text. Before your next
+    tool call, write out every `message` event in the result as your reply
+    text, verbatim: Codex's words exactly, with no paraphrase, summary or
+    omission, however long.
   - On a `question` or `approval` event, put it to the user and end your turn.
     Send their answer with codex_answer or codex_approve, then resume the loop.
   - On timedOut, call codex_wait again and write nothing.
@@ -61,8 +63,9 @@ the conversation and carry messages both ways faithfully.
 ## Codex answers
 
 - When the turn ends, Codex's answer is lastAnswer in the final codex_wait or
-  codex_status result. If its text already went out whole as a `message`
-  event, it is relayed. Otherwise relay lastAnswer close to verbatim: keep its
+  codex_status result. If you already wrote that text out in your own reply
+  text as a `message` event, don't repeat it. Otherwise write lastAnswer out
+  close to verbatim: keep its
   code, paths, commands, numbers, caveats and open questions. Trim only
   repetition and event noise.
 - Put any comment of your own after the answer, labelled as yours.
