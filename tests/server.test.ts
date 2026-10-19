@@ -128,3 +128,24 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
     ).isError,
   ).toBe(true);
 });
+
+test("MCP codex_wait blocks until Codex speaks and validates its timeout", async () => {
+  const { call, client } = await connect();
+  const { threadId } = await call("codex_start", {
+    cwd: process.cwd(),
+    prompt: "message",
+  });
+  const result = await call("codex_wait", { threadId, after: 0 });
+  expect(result.status).toBe("running");
+  expect(result.events).toEqual([
+    expect.objectContaining({ kind: "message", text: "interim" }),
+  ]);
+  expect(
+    (
+      await client.callTool({
+        name: "codex_wait",
+        arguments: { threadId, timeoutMs: 110_001 },
+      })
+    ).isError,
+  ).toBe(true);
+});

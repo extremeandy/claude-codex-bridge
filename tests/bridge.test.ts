@@ -288,3 +288,116 @@ test("shutdown kills a Codex process that ignores SIGTERM", async () => {
   await bridge.close();
   await expect(rpc.call("model/list", {})).rejects.toThrow("closed");
 });
+
+test("wait returns on a Codex message while the turn keeps running", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "message" });
+  const result = await bridge.wait(threadId);
+  expect(result.timedOut).toBe(false);
+  expect(result.status).toBe("running");
+  expect(result.events.map((event) => [event.kind, event.text])).toEqual([
+    ["message", "interim"],
+  ]);
+  expect(result).not.toHaveProperty("lastAnswer");
+  expect(result.latestSequence).toBe(bridge.status().latestSequence);
+});
+
+test("wait ignores progress and activity and times out without events", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "work" });
+  const result = await bridge.wait(threadId, 0, 100);
+  expect(result.timedOut).toBe(true);
+  expect(result.events).toEqual([]);
+  const kinds = bridge.events().events.map((event) => event.kind);
+  expect(kinds).toContain("progress");
+  expect(kinds).toContain("activity");
+  expect(kinds).toContain("activity_completed");
+  expect(result.latestSequence).toBe(bridge.status().latestSequence);
+});
+
+test("wait returns at once for a thread with no running turn", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "instant" });
+  const started = Date.now();
+  const latest = await bridge.wait(threadId);
+  expect(Date.now() - started).toBeLessThan(50);
+  expect(latest).toMatchObject({
+    status: "completed",
+    timedOut: false,
+    events: [],
+    lastAnswer: "finished",
+  });
+  expect(
+    (await bridge.wait(threadId, 0)).events.map((event) => event.kind),
+  ).toEqual(["message", "completed"]);
+});
+
+test("wait returns on a question with the pending question", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "question" });
+  const result = await bridge.wait(threadId, 0);
+  expect(result.status).toBe("waiting_input");
+  expect(result.events.map((event) => event.kind)).toEqual(["question"]);
+  expect(result.questions[0].params.questions[0].id).toBe("choice");
+});
+
+test("looping wait from latestSequence follows a turn to its end and lastAnswer", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "work" });
+  const first = bridge.wait(threadId, 0);
+  await bridge.message(threadId, "go");
+  const kinds: string[] = [];
+  let result = await first;
+  for (;;) {
+    kinds.push(...result.events.map((event) => event.kind));
+    if (result.status !== "running") break;
+    result = await bridge.wait(threadId, result.latestSequence);
+  }
+  expect(kinds).toEqual(["message", "completed"]);
+  expect(result).toMatchObject({
+    status: "completed",
+    lastAnswer: "steered: go",
+    answerTruncated: false,
+  });
+});
+
+test("wait resolves when the bridge closes or Codex exits", async () => {
+  const { bridge } = fixture();
+  const one = await bridge.start({ cwd, prompt: "work" });
+  const crashed = bridge.wait(one.threadId);
+  await expect(bridge.start({ cwd, prompt: "crash" })).rejects.toThrow(
+    "exited",
+  );
+  const result = await crashed;
+  expect(result.status).toBe("unavailable");
+  expect(result.events.map((event) => event.kind)).toEqual(["unavailable"]);
+
+  const other = fixture().bridge;
+  const two = await other.start({ cwd, prompt: "work" });
+  const closing = other.wait(two.threadId);
+  await other.close();
+  expect((await closing).timedOut).toBe(false);
+  expect((await other.wait(two.threadId)).timedOut).toBe(false);
+});
+
+test("wait rejects a timeout above the maximum", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "instant" });
+  await expect(bridge.wait(threadId, undefined, 110_001)).rejects.toThrow(
+    "at most 110000",
+  );
+});
+
+test("concurrent waits on one thread all return, and other threads keep waiting", async () => {
+  const { bridge } = fixture();
+  const quiet = await bridge.start({ cwd, prompt: "work" });
+  const chatty = await bridge.start({ cwd, prompt: "message" });
+  const [a, b, c] = await Promise.all([
+    bridge.wait(chatty.threadId),
+    bridge.wait(chatty.threadId),
+    bridge.wait(quiet.threadId, undefined, 100),
+  ]);
+  expect(a.events.map((event) => event.text)).toEqual(["interim"]);
+  expect(b.events).toEqual(a.events);
+  expect(c.timedOut).toBe(true);
+});

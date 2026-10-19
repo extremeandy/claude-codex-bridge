@@ -227,6 +227,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               exitCode: 0,
             },
           });
+          if (prompt === "message")
+            notify("item/completed", {
+              threadId: params.threadId,
+              item: { type: "agentMessage", id: "interim", text: "interim" },
+            });
         }, 5);
       }
       break;
