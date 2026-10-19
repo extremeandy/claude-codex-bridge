@@ -24,34 +24,47 @@ the conversation and carry messages both ways faithfully.
   or a turn is clearly hard such as a design decision, pass a stronger model
   from codex_models or a higher effort with the codex_start or codex_message
   that starts the turn. Codex keeps them for later turns.
-- After sending, confirm with codex_status that the turn is running and keep
-  its latestSequence as the last sequence seen; each event you receive moves
-  it forward, and you relay each sequence once. If the codex-bridge server
-  instructions name an event log file and Monitor is not already following it,
-  arm Monitor on it with the filtered command they give, so progress reaches
-  the user live. Tell the user in one line what Codex is working on, then end
-  your turn.
+- After sending, tell the user in one line what Codex is working on, then
+  follow the turn as below without ending your turn.
 
 ## While Codex works
 
-- Report progress in one short line per event worth reporting.
-- While the turn runs, re-arm Monitor at its deadline as the server
-  instructions describe. Stop it when the turn ends.
-- When the user next writes, compare codex_status's latestSequence with the
-  last sequence seen. If it is ahead, or codex_status reports a channelError,
-  events are not reaching you: tell the user once, then at the start of each
-  reply read codex_status, and codex_events with after set to the last
-  sequence seen so it returns only new events.
-- When the user adds direction or changes course, send it to the running turn
-  with codex_message straight away. When the user says stop, call codex_stop.
+- Keep the last sequence seen: 0 for a thread you just started or resumed,
+  otherwise the latestSequence of your last codex_wait. Pass it as after to
+  codex_wait and codex_events so they return only new events, and relay each
+  sequence once, whichever path brought it.
+- Loop codex_wait from the last sequence seen, moving it to each result's
+  latestSequence:
+  - Post each `message` event's text as your reply text, verbatim: Codex's
+    words exactly, with no paraphrase or summary.
+  - On a `question` or `approval` event, put it to the user and end your turn.
+    Send their answer with codex_answer or codex_approve, then resume the loop.
+  - On timedOut, call codex_wait again and write nothing.
+  - When a user message arrives between waits, send their direction to the
+    running turn with codex_message, or call codex_stop when they say stop,
+    then continue the loop.
+  - When the status is no longer running, waiting_input or waiting_approval,
+    the turn has ended: relay its answer as below (for failed or unavailable,
+    the event text) and end your turn.
 - Read files whenever it helps. Leave edits to Codex while a turn is running in
   the same checkout, so the files Codex sees stay the files it wrote.
+- If your turn ends while Codex still runs, follow it in the background: when
+  the codex-bridge server instructions name an event log file and Monitor is
+  not following it, arm Monitor on it with the filtered command they give,
+  re-arm it at its deadline as they describe, and stop it when the turn ends.
+  Report each event worth reporting in one short line. If codex_status's
+  latestSequence is ahead of the last sequence seen, or it reports a
+  channelError, events are not reaching you: tell the user once. When the
+  user next writes, act on their message, then resume the loop; it returns
+  the messages you missed.
 
 ## Codex answers
 
-- Read Codex's latest answer from codex_status's lastAnswer. Relay each answer
-  close to verbatim: keep its code, paths, commands, numbers, caveats and open
-  questions. Trim only repetition and event noise.
+- When the turn ends, Codex's answer is lastAnswer in the final codex_wait or
+  codex_status result. If its text already went out whole as a `message`
+  event, it is relayed. Otherwise relay lastAnswer close to verbatim: keep its
+  code, paths, commands, numbers, caveats and open questions. Trim only
+  repetition and event noise.
 - Put any comment of your own after the answer, labelled as yours.
 
 ## Decisions stay with the user

@@ -192,10 +192,12 @@ Claude shows you each request and waits for your decision:
 
 The plugin ships an opt-in output style, `codex-relay`, that makes Claude a thin
 relay to Codex. Claude sends each task to one persistent Codex thread with the
-context Codex needs, reports progress, and passes Codex's answers through close
-to verbatim. Codex does the reading, reasoning, and editing. Claude still steers
-or stops the running turn when you ask, and brings Codex's questions to you
-rather than answering them itself.
+context Codex needs, then stays in its turn looping `codex_wait`, so the session
+looks busy while Codex works and Codex's messages appear as Claude's replies,
+word for word. Monitor on the event log covers a turn Claude has left. Codex
+does the reading, reasoning, and editing. Claude still steers or stops the
+running turn when you ask, and brings Codex's questions to you rather than
+answering them itself.
 
 Select it in the terminal with `/output-style claude-codex-bridge:codex-relay`,
 or from `/config` under **Output style**. Claude follows the style from your
