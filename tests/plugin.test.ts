@@ -77,7 +77,7 @@ test("npm archive installs offline and its executable emits live events outside 
     expect(client.getServerCapabilities()?.experimental).toEqual({
       "claude/channel": {},
     });
-    expect((await client.listTools()).tools.length).toBe(9);
+    expect((await client.listTools()).tools.length).toBe(10);
     const started = await client.callTool({
       name: "codex_start",
       arguments: { cwd: directory, prompt: "work" },

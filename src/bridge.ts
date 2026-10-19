@@ -116,6 +116,39 @@ type Approval = {
   /** The proposed edits of a file change, from its item/started notification. */
   changes?: FileUpdateChange[];
 };
+/**
+ * The event kinds codex_wait returns on: Codex's messages and questions, and
+ * the end of a turn or of the connection. Progress and activity events never
+ * end a wait.
+ */
+export const waitKinds: ReadonlySet<string> = new Set([
+  "message",
+  "question",
+  "approval",
+  "completed",
+  "interrupted",
+  "failed",
+  "error",
+  "unavailable",
+]);
+/**
+ * Kinds codex_wait returns alongside waitKinds without waking for them.
+ * auto_review reports a decision Codex's reviewer already made, so the turn
+ * does not wait on the user.
+ */
+const waitReportedKinds: ReadonlySet<string> = new Set([
+  ...waitKinds,
+  "auto_review",
+]);
+export const defaultWaitMs = 100_000;
+/** Below Claude Code's 120 s default, after which a tool call moves to the background. */
+export const maxWaitMs = 110_000;
+/** Statuses in which a turn can still emit events worth waiting for. */
+const activeStatuses: ReadonlySet<Session["status"]> = new Set([
+  "running",
+  "waiting_input",
+  "waiting_approval",
+]);
 type Session = ThreadSettings & {
   threadId: string;
   model: string;
@@ -153,6 +186,7 @@ export class Bridge {
     { text: string; truncated: boolean; timer: ReturnType<typeof setTimeout> }
   >();
   private delivery = Promise.resolve();
+  private waiters = new Set<{ threadId: string; wake: () => void }>();
   private closed = false;
   channelError: string | null = null;
   eventLogError: string | null = null;
@@ -222,6 +256,7 @@ export class Bridge {
             : error.message,
         );
       }
+      this.wakeAll();
     };
     rpc.onConnect = () => this.reattach();
   }
@@ -416,6 +451,80 @@ export class Bridge {
       latestSequence: this.sequence,
       // A cursor past latestSequence came from an earlier bridge process.
       gap: after < oldest - 1 || after > this.sequence,
+    };
+  }
+
+  /**
+   * Waits until the thread has an event in waitKinds after `after`, its turn is
+   * not active, the bridge stops, or timeoutMs passes. `after` defaults to the
+   * latest sequence, so only new events end the wait.
+   */
+  async wait(threadId: string, after?: number, timeoutMs = defaultWaitMs) {
+    if (timeoutMs > maxWaitMs)
+      throw new Error(`timeoutMs must be at most ${maxWaitMs}`);
+    const session = this.session(threadId);
+    // A cursor past the latest sequence came from an earlier bridge process.
+    const cursor = Math.min(after ?? this.sequence, this.sequence);
+    const since = (kinds: ReadonlySet<string>) =>
+      this.journal.filter(
+        (event) =>
+          event.threadId === threadId &&
+          event.sequence > cursor &&
+          kinds.has(event.kind),
+      );
+    let timedOut = false;
+    if (
+      !since(waitKinds).length &&
+      activeStatuses.has(session.status) &&
+      !this.closed &&
+      !this.failure
+    )
+      timedOut = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          this.waiters.delete(waiter);
+          resolve(true);
+        }, timeoutMs);
+        const waiter = {
+          threadId,
+          wake: () => {
+            clearTimeout(timer);
+            this.waiters.delete(waiter);
+            resolve(false);
+          },
+        };
+        this.waiters.add(waiter);
+      });
+    // Built after the await, so events from the same batch of notifications
+    // (a message and its turn's completion) return together.
+    const found = since(waitReportedKinds);
+    const events: Omit<BridgeEvent, "threadId" | "timestamp">[] = [];
+    let size = 0;
+    for (const { sequence, kind, text, truncated } of found) {
+      size += text.length;
+      // Always return one event so the cursor advances.
+      if (size > eventsTextBudget && events.length > 0) break;
+      events.push({ sequence, kind, text, truncated });
+    }
+    const more = events.length < found.length;
+    const ended = !activeStatuses.has(session.status);
+    return {
+      threadId,
+      status: session.status,
+      timedOut,
+      events,
+      more,
+      ...(ended && {
+        lastAnswer: session.lastAnswer,
+        answerTruncated: session.answerTruncated,
+      }),
+      questions: [...session.questions],
+      // The approval event holds the proposed changes; these stay compact.
+      approvals: session.approvals.map(({ changes, ...approval }) => approval),
+      // Pass as the next call's `after`. Skipped progress and activity events
+      // are not returned later.
+      latestSequence: more
+        ? (events.at(-1)?.sequence ?? this.sequence)
+        : this.sequence,
     };
   }
 
@@ -811,6 +920,9 @@ export class Bridge {
         this.eventLogError = String(error);
       }
     }
+    if (waitKinds.has(kind))
+      for (const waiter of this.waiters)
+        if (waiter.threadId === threadId) waiter.wake();
     this.delivery = this.delivery.then(async () => {
       try {
         await this.publish(event);
@@ -819,6 +931,10 @@ export class Bridge {
         this.channelError = String(error);
       }
     });
+  }
+
+  private wakeAll() {
+    for (const waiter of this.waiters) waiter.wake();
   }
 
   /**
@@ -841,6 +957,7 @@ export class Bridge {
     for (const threadId of this.buffers.keys()) this.flush(threadId);
     this.failure ??= "Bridge closed";
     this.markUnavailable();
+    this.wakeAll();
     await this.rpc.close();
     await this.delivery;
     if (this.eventLogFd !== undefined) {

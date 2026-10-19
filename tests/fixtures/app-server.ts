@@ -215,7 +215,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             approvalsReviewer: thread.approvalsReviewer ?? "absent",
           }),
         );
-      if (prompt === "auto_review") {
+      if (prompt.startsWith("auto_review")) {
         notify("item/autoApprovalReview/completed", {
           threadId: params.threadId,
           turnId: thread.turnId,
@@ -235,7 +235,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             cwd: "/",
           },
         });
-        finish(params.threadId);
+        if (prompt === "auto_review") finish(params.threadId);
       }
       if (prompt === "failed") {
         notify("error", {
@@ -403,6 +403,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               exitCode: 0,
             },
           });
+          if (prompt === "message")
+            notify("item/completed", {
+              threadId: params.threadId,
+              item: { type: "agentMessage", id: "interim", text: "interim" },
+            });
         }, 5);
       }
       break;
