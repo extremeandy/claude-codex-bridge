@@ -165,6 +165,23 @@ model is requested without provider fallback. Ask for a service tier such as
 | `codex_answer` | Answer a structured question from Codex. |
 | `codex_status` | Read status, pending questions, and the latest answer. |
 | `codex_events` | Read recent events using a sequence cursor. |
+| `codex_wait` | Block until Codex sends a message or question, or its turn ends. |
+
+## Follow a turn in the foreground
+
+Channel events reach Claude only when it takes its next turn, so between events
+the Claude session looks idle. To keep Claude working while Codex runs, Claude
+can loop `codex_wait`. Each call blocks for up to about 100 seconds
+(`timeoutMs`, at most 110,000, below Claude Code's two-minute limit before a
+tool call moves to the background). It returns early on a Codex message, a
+question, the end of the turn, an error, or Codex becoming unavailable, and at
+once when the thread has no running turn. Progress and activity events do not
+end a wait.
+
+Pass the result's `latestSequence` as the next call's `after`. Without `after`,
+a call waits only for events that arrive after it; pass `after: 0` for a thread
+just started with `codex_start`. A message you type while Claude waits reaches
+Claude when the current call returns, so it can steer Codex between calls.
 
 ## How it works
 
