@@ -336,11 +336,26 @@ export function createServer(
         }
         case "codex_wait": {
           const input = definitions.codex_wait.schema.parse(args);
-          result = await bridge.wait(
+          const waited = await bridge.wait(
             input.threadId,
             input.after,
             input.timeoutMs,
           );
+          // Relaying models treat tool results as already shown to the user and
+          // skip Codex's messages, so the text to relay and the instruction to
+          // relay it travel in the result itself.
+          // The final answer is always a message event too, often in the call
+          // before the one that reports completion, so lastAnswer isn't added.
+          const messages = waited.events
+            .filter((event) => event.kind === "message")
+            .map((event) => event.text);
+          result = messages.length
+            ? {
+                note: "The user cannot see this tool result. Write sayToUser into your reply text verbatim before your next tool call.",
+                sayToUser: messages.join("\n\n"),
+                ...waited,
+              }
+            : waited;
           break;
         }
         default:
