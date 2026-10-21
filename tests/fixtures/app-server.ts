@@ -403,10 +403,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               exitCode: 0,
             },
           });
-          if (prompt === "message")
+          if (prompt === "message" || prompt === "long_message")
             notify("item/completed", {
               threadId: params.threadId,
-              item: { type: "agentMessage", id: "interim", text: "interim" },
+              item: {
+                type: "agentMessage",
+                id: "interim",
+                text: prompt === "message" ? "interim" : "y".repeat(12_000),
+              },
             });
         }, 5);
       }

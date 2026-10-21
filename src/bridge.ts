@@ -180,6 +180,11 @@ export class Bridge {
   >();
   private busy = new Set<string>();
   private journal: BridgeEvent[] = [];
+  // Untruncated text of journaled message events, for codex_wait to relay.
+  private fullMessages = new Map<
+    number,
+    { text: string; truncated: boolean }
+  >();
   private sequence = 0;
   private buffers = new Map<
     string,
@@ -499,11 +504,19 @@ export class Bridge {
     const found = since(waitReportedKinds);
     const events: Omit<BridgeEvent, "threadId" | "timestamp">[] = [];
     let size = 0;
-    for (const { sequence, kind, text, truncated } of found) {
+    for (const event of found) {
+      // Relayed messages need Codex's whole text, not the journal's 8,000.
+      const { text, truncated } =
+        this.fullMessages.get(event.sequence) ?? event;
       size += text.length;
       // Always return one event so the cursor advances.
       if (size > eventsTextBudget && events.length > 0) break;
-      events.push({ sequence, kind, text, truncated });
+      events.push({
+        sequence: event.sequence,
+        kind: event.kind,
+        text,
+        truncated,
+      });
     }
     const more = events.length < found.length;
     const ended = !activeStatuses.has(session.status);
@@ -910,7 +923,15 @@ export class Bridge {
       timestamp: new Date().toISOString(),
     };
     this.journal.push(event);
-    if (this.journal.length > this.journalLimit) this.journal.shift();
+    if (kind === "message")
+      this.fullMessages.set(event.sequence, {
+        text: text.slice(0, 64_000),
+        truncated: text.length > 64_000,
+      });
+    if (this.journal.length > this.journalLimit) {
+      const evicted = this.journal.shift();
+      if (evicted) this.fullMessages.delete(evicted.sequence);
+    }
     if (this.eventLogFd !== undefined) {
       // One O_APPEND write per line keeps each event whole on its own line.
       try {

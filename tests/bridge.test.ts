@@ -863,6 +863,21 @@ test("wait returns on a Codex message while the turn keeps running", async () =>
   expect(result.latestSequence).toBe(bridge.status().latestSequence);
 });
 
+test("wait returns a Codex message longer than the journal's 8,000 characters whole", async () => {
+  const { bridge } = fixture();
+  const { threadId } = await bridge.start({ cwd, prompt: "long_message" });
+  const result = await bridge.wait(threadId);
+  expect(result.events).toEqual([
+    expect.objectContaining({
+      kind: "message",
+      text: "y".repeat(12_000),
+      truncated: false,
+    }),
+  ]);
+  const journaled = bridge.events().events.find((e) => e.kind === "message");
+  expect(journaled?.text.length).toBe(8_000);
+});
+
 test("wait ignores progress and activity and times out without events", async () => {
   const { bridge } = fixture();
   const { threadId } = await bridge.start({ cwd, prompt: "work" });
